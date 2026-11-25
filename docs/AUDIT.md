@@ -3020,6 +3020,96 @@ runs each, this branch's compiler and main's in turn: 139, 218, 215b, 131, 127 a
 on both (`rounds: result 3`, the open leak of the row in docs/FINISH.md). The homelab's jobs: docs/FINISH.md's
 entry.
 
+**A3.7 Programs with threads: the groups that are one thread's (2026-11-23, branch claude/threads-speed-1 from main
+2440607). [run]** The owner's bars: (A) a program that starts threads must not run its single-threaded code slower
+than the same program without threads; (B) work split over N threads must finish faster than on one, near N times
+for independent work; then (C) close in on NativeAOT-LLVM (its build with threads does not link here, A3.6).
+
+*Measured first.* The tree's parts on the main thread while one worker waits (tparts_main, beside tparts0 without
+threads; us): build 1,640 against 241, replace 1,540 against 294, drop 195 against 59. The profile: LinkLock's
+walk (ArenaVisit under LinkLock), the general join (LinkMembers, ArenaLinkCore) where the program without threads
+takes JoinFresh, JoinOwned, AddNode; the stripes. A build of the program without threads with every fused path off
+(the existing NO_* switches) takes 691 us: the fused paths were two thirds of the gap, the locks the rest.
+
+*What is in* (each a CS2WASM_NO_* switch; programs without threads byte for byte main's: tools/frames's module, 145,
+220, 193):
+- **Groups of classes that are one thread's** (Arenas.LocalScc). A group of classes (an SCC of the arena type graph)
+  none of whose types another thread can reach (Sharing.MemberIdShared: the analysis of A3.6, by type, at compile
+  time) has groups that are each the making thread's alone. A table, rt.scc_local(type id), emitted once the
+  sharing is resolved. In GroupLocks.cs such an object's stripe is LocalStripe (-2): taking it is only a push on the
+  thread's list (the destructions still wait for it), no compare-exchange, no table word; LinkLock returns as
+  before the first thread, with no walk. The single-thread paths are taken for such groups: JoinFresh, JoinOwned,
+  JoinPair, AddNode, EarlyGiveBack, ReplaceArray, ArenaGrowArray (LocalStripe pushed instead of the runtime lock),
+  ShedHolds, the slot walk, the merge's repoint, the pinned skip, ArenaRetain's and ArenaRelease's fast paths,
+  ArenaArrayCopy into a new array, ArenaDestroyPlain (each block freed the way of its kind), ArenaFree's passes
+  without the deferred visit, s_lastC. CS2WASM_NO_LOCAL_GROUPS=1.
+- **An array with no element is pinned as it is made** in a program with threads (Rt.AllocArray, PinEmpty), so an
+  empty array every thread can reach never joins a group: the analysis already took such arrays (EmptyArrayTag) for
+  no thread's slots; now they may be in a one-thread group's slots too. Off with CS2WASM_NO_LOCAL_GROUPS=1.
+- **A static readonly field's one write fixes an empty array** (Arenas.PinFixed, Rt.ArenaPinFixed): the store of
+  its initializer, where no static constructor of the type names the field (Driver.StaticWrittenOnce), makes an
+  array with no element immortal. List<T>.s_emptyArray, which every list starts with, was counted by every thread
+  at every list made and let go, and read at every leaf's list: eight threads with trees of their own took its line
+  from each other (rt.retain 192 ms of a profile, in the entity's constructor, none with one thread; the walk and
+  JoinFresh three times slower a thread). An immortal object links to nothing (JoinFresh, its next level, SlotEmpty,
+  LinkJoinedSlot take it as pinned). CS2WASM_NO_FIXED_PINS=1.
+- **The failed tops of one-thread groups counted by their thread** (t_failedLocal beside s_failedTops). One top of
+  the idle worker's Thread group had left the global count at 1, and AddNode, NodeUp, PlainParents (which ask for no
+  note anywhere) refused for every group in the program: node-add, node-up, plain-parents 0 against 40,041, 34,756,
+  6,782 a run. Now the op counts of tparts on the main thread are those of the program without threads.
+- CS2WASM_EXP_THREADMODE=1: every program compiled for threads (run on one thread, every group is one thread's), a
+  test of the runtime's code for threads with the whole suite. On the homelab at the first stage: all pass but 220,
+  132, 185 (objects left: "live 800", "left 2265", "red 400"), which leave the same with CS2WASM_NO_LOCAL_GROUPS=1:
+  the cycle runtime with threads, before this branch (handed to the thread-hangs session). 247 left "nodes 5" with
+  the groups locked and leaves nothing with them one thread's, as without threads.
+- Tests 290 (each worker's trees, the empty array every worker's nodes refer to, Hubs every thread's under a lock)
+  and 291 (the fixed empty array; a static that is not readonly keeps its object let-go-able): each the same under
+  the share check; CS2WASM_EXP_NO_EMPTY_PIN=1, CS2WASM_EXP_ALL_GROUPS_LOCAL=1 and CS2WASM_EXP_FIXED_PINS_ANY=1
+  each change the output; the same with the rule off. In tools/thread-escape-breaks.sh. With the share check, a lock
+  left out for an object another thread made stops the program (LocalGroupCheck: the container and the value).
+
+*Numbers* (`node tools/frames-threads.mjs --runs 3 --js-young 32`, the desk, medians ms; main from A3.6's last
+table, NativeAOT-LLVM and cs2wasm without threads from this run):
+
+| scene | NativeAOT, no threads | cs2wasm, no threads | threads, main | threads, this branch |
+|---|---|---|---|---|
+| churn, one idle worker | 0.049 | 0.059-0.061 | 0.096-0.100 | 0.094-0.095 |
+| collections, idle | 0.006 | 0.006 | 0.012-0.013 | 0.012 |
+| strings, idle | 0.008 | 0.007 | 0.013 | 0.012 |
+| tree, idle | 0.032-0.033 | 0.038-0.039 | 0.122-0.126 | 0.073-0.074 |
+| tree, idle, worst frame | 3.5-3.7 | 2.5-2.6 | 16.3-23.2 | 8.0-8.5 |
+| bigdrop, idle | 0.003 | 0.003 | 0.009 | 0.009 |
+| private churn, 1 / 4 / 8 | 0.048 | 0.061-0.063 | 0.104 / 0.111 / 0.160 | 0.102 / 0.107 / 0.112 |
+| private tree, 1 / 4 / 8 | 0.006 | 0.007 | 0.022 / 0.034 / 0.056 | 0.010 / 0.010 / 0.012 |
+| shared, 1 / 2 / 4 | 0.101 | 0.070 | 0.11-0.17 / 0.08-0.17 / 0.31 | 0.110 / 0.081 / 0.225 |
+
+Scaling (the work of N threads in the time of one): private tree 1.88, 3.40, 5.50 at 2, 4, 8 (main 1.57-2.00,
+2.19-2.75, 3.04-3.55); private churn 1.91, 3.37, 5.21 (main 4.76-5.38 at 8); arithmetic alone 2.01, 3.55, 5.99.
+The parts on a worker (us; main -> now; without threads): tree build 1,648 -> 361 (244), replace 1,553 -> 418
+(294), drop 201 -> 89 (57), walk 15 -> 11 (10); churn make 294 -> 291 (175), pass 125 (84), drop 315 -> 316 (39).
+Memory unchanged (16 MB, 32 and 48 with four and eight workers).
+
+*Where the bars stand.* (B) holds for private work: a tree each, eight threads, 5.5 times the work of one in the
+same time where the machine gives arithmetic 6.0; the shared scene with four workers is still slower than with two
+(its frame is the workers' wake on one lock a item, Monitor: not this branch's). (A) does not hold on any idle scene.
+The tree: 1.9x the program without threads (from 3.2x). The op counts are now equal; what is left is the code for
+threads itself: the same program compiled for threads and run with no thread started (CS2WASM_EXP_THREADMODE=1,
+which keeps the allocator of one thread) builds in 328 against 247 us, and with a real idle worker 366: the
+40-byte prefix and its lock word, the thread's pages and FreeLocal's page lookup, the destructions' queue. Tried
+and measured at nothing (taken out again): plain count stores for one-thread members in ArenaJoinOnly, TryLeave,
+LinkMembers, ArenaRetain and ArenaRelease (uncontended atomics cost nothing measurable here); AllocObjectArena's
+own piece on the thread's page; a member stored into a plain one-thread container joined as without threads; the
+dead members' blocks put straight back onto the thread's own pages without the dispatch on their type. The idle
+tree's worst frame (8 ms against 2.5) is the drop of the whole tree every 500 frames (CS2WASM_DROP_STATS=1: 67,312
+members, walk 1.9, clear 1.3, free 1.4 ms against 0.6, -, 0.16 without threads): FusedDrop (the clear inside the
+walk) is off with threads, for rt.release with threads sends a member at -2 to its slow path; the free is the
+thread's pages and their page lookup (the allocator: claude/threads-sites-1's now).
+Churn, collections, strings, bigdrop: the atomic counts of objects whose type every thread can reach (System.String
+through CultureInfo's, char[] and Int64[] through pointers): with CS2WASM_PLAIN_COUNTS=1 (an unsound measurement)
+churn's drop on a worker goes 315 -> 145 us. Their answer needs sharing by where an object is made, and by the
+calling context (the scene's words come from String.Split, a site shared code uses too): the session
+claude/threads-sites-1.
+
 ### A4. Plugins (goal 3)
 
 **A4.1 Generated code cannot reach private members. [read]**
