@@ -215,8 +215,78 @@ namespace System
             int n = Il2Wasm.Runtime.Rt.DelegateArity(this);
             if (n < 0) throw new PlatformNotSupportedException("il2wasm: DynamicInvoke of " + GetType() + " (a delegate with ref or span parameters)");
             if ((args?.Length ?? 0) != n) throw new System.Reflection.TargetParameterCountException(SR.Arg_ParmCnt);
-            try { return Il2Wasm.Runtime.Rt.DynamicInvokeRaw(this, args); }
+            // (the arguments as their parameters take them, before the call: an ArgumentException is not wrapped)
+            object?[] converted = Il2Wasm.Runtime.Rt.DynamicArguments(this, args);
+            try { return Il2Wasm.Runtime.Rt.DynamicInvokeRaw(this, converted); }
             catch (Exception e) { throw new System.Reflection.TargetInvocationException(e); }
+        }
+
+        /// <summary>il2wasm: what CoreCLR's argument check does for a parameter of a value type (called by the compiler's
+        /// dynamic argument thunks): the argument itself when it is of the type, a primitive widened to it (typeCode:
+        /// the parameter's System.TypeCode, 0 for other types), null for a null argument (the thunk makes the default
+        /// value), otherwise ArgumentException.</summary>
+        internal static object? DynamicValueArgument(object? arg, int typeId, int typeCode, string paramName)
+        {
+            if (arg == null || Il2Wasm.Runtime.Rt.TypeId(arg) == typeId) return arg;
+            if (typeCode != 0 && WidenedPrimitive(arg, typeCode) is { } widened) return widened;
+            DynamicArgumentFailed(arg, paramName);
+            return null;
+        }
+
+        /// <summary>il2wasm: the check of an argument for a reference parameter (called by the compiler's dynamic argument
+        /// thunks when the argument is not an instance of the parameter's type).</summary>
+        internal static void DynamicArgumentFailed(object arg, string paramName) =>
+            throw new ArgumentException("Object of type '" + arg.GetType().ToString() + "' cannot be converted to type '" + paramName + "'.");
+
+        /// <summary>The primitive widened to the type (a widening conversion, CoreCLR's CanChangePrimitive), or null.</summary>
+        static object? WidenedPrimitive(object arg, int typeCode)
+        {
+            int from = arg switch
+            {
+                bool => (int)TypeCode.Boolean, char => (int)TypeCode.Char, sbyte => (int)TypeCode.SByte, byte => (int)TypeCode.Byte,
+                short => (int)TypeCode.Int16, ushort => (int)TypeCode.UInt16, int => (int)TypeCode.Int32, uint => (int)TypeCode.UInt32,
+                long => (int)TypeCode.Int64, ulong => (int)TypeCode.UInt64, float => (int)TypeCode.Single, double => (int)TypeCode.Double,
+                _ => 0,
+            };
+            if (!PrimitiveWidens(from, typeCode)) return null;
+            bool signed = from is (int)TypeCode.SByte or (int)TypeCode.Int16 or (int)TypeCode.Int32 or (int)TypeCode.Int64;
+            ulong u = arg switch { byte v => v, char v => v, ushort v => v, uint v => v, ulong v => v, _ => 0 };
+            long l = signed ? arg switch { sbyte v => v, short v => v, int v => v, long v => v, _ => 0 } : (long)u;
+            switch ((TypeCode)typeCode)
+            {
+                case TypeCode.Char: return (char)u;
+                case TypeCode.Int16: return (short)l;
+                case TypeCode.Int32: return (int)l;
+                case TypeCode.Int64: return l;
+                case TypeCode.UInt16: return (ushort)u;
+                case TypeCode.UInt32: return (uint)u;
+                case TypeCode.UInt64: return u;
+                case TypeCode.Single:
+                    return from == (int)TypeCode.Single ? (float)arg : signed ? (float)l : (float)u;
+                case TypeCode.Double:
+                    return from == (int)TypeCode.Single ? (double)(float)arg : signed ? (double)l : (double)u;
+            }
+            return null;
+        }
+
+        // the primitive widenings: from each source type, the types it widens to (the source itself included)
+        static bool PrimitiveWidens(int from, int to)
+        {
+            if (from == to) return false; // (the same type: the argument is of it already)
+            return (TypeCode)from switch
+            {
+                TypeCode.Char => to is (int)TypeCode.UInt16 or (int)TypeCode.UInt32 or (int)TypeCode.Int32 or (int)TypeCode.UInt64 or (int)TypeCode.Int64 or (int)TypeCode.Single or (int)TypeCode.Double,
+                TypeCode.SByte => to is (int)TypeCode.Int16 or (int)TypeCode.Int32 or (int)TypeCode.Int64 or (int)TypeCode.Single or (int)TypeCode.Double,
+                TypeCode.Byte => to is (int)TypeCode.Char or (int)TypeCode.Int16 or (int)TypeCode.UInt16 or (int)TypeCode.Int32 or (int)TypeCode.UInt32 or (int)TypeCode.Int64 or (int)TypeCode.UInt64 or (int)TypeCode.Single or (int)TypeCode.Double,
+                TypeCode.Int16 => to is (int)TypeCode.Int32 or (int)TypeCode.Int64 or (int)TypeCode.Single or (int)TypeCode.Double,
+                TypeCode.UInt16 => to is (int)TypeCode.UInt32 or (int)TypeCode.Int32 or (int)TypeCode.UInt64 or (int)TypeCode.Int64 or (int)TypeCode.Single or (int)TypeCode.Double,
+                TypeCode.Int32 => to is (int)TypeCode.Int64 or (int)TypeCode.Single or (int)TypeCode.Double,
+                TypeCode.UInt32 => to is (int)TypeCode.UInt64 or (int)TypeCode.Int64 or (int)TypeCode.Single or (int)TypeCode.Double,
+                TypeCode.Int64 => to is (int)TypeCode.Single or (int)TypeCode.Double,
+                TypeCode.UInt64 => to is (int)TypeCode.Single or (int)TypeCode.Double,
+                TypeCode.Single => to is (int)TypeCode.Double,
+                _ => false,
+            };
         }
 
         public override bool Equals([NotNullWhen(true)] object? obj)
