@@ -18,6 +18,7 @@ static class SignatureChecks
             public Node Next; public int X;
             public Node Get() => Next;
             public Node Self() => this;
+            public Node Chain(int k) { S.Touch(k); X += k; return this; }
         }
         public sealed class T { public T L, R; public int V; }
         public static class S
@@ -45,6 +46,9 @@ static class SignatureChecks
             public static unsafe int PinField(Node n) { fixed (int* p = &n.Next.X) { return *p + 2; } }
             public static unsafe int PinNew(int k) { fixed (int* p = &Make().X) { return *p + k; } }
             static void Fail() => throw new Exception();
+            public static void Touch(int k) { if (k < 0) Fail(); }
+            static readonly Node s_left = new Node { X = 1 }, s_right = new Node { X = 2 };
+            public static ref int Pick(bool c) { var n = c ? s_left : s_right; return ref n.X; }
             public static void Main()
             {
                 var n = new Node { X = 3 };
@@ -58,6 +62,9 @@ static class SignatureChecks
                 Console.WriteLine(W(t));
                 Console.WriteLine(Walk());
                 Console.WriteLine(Pin(n) + PinField(n) + PinNew(2));
+                n.Chain(1); n.Chain(2);
+                Console.WriteLine(n.X);
+                Console.WriteLine(Pick(true) + Pick(false));
             }
         }
         """;
@@ -72,6 +79,7 @@ static class SignatureChecks
         var callees = new Dictionary<string, string>();
         string? walkPhi = null;
         var deadVars = new Dictionary<string, int>();
+        string? pickPhi = null;
         Plan.Built = (ctx, plan) =>
         {
             if (ctx.Method.OwningType is MetadataType wt && wt.GetName() == "S" && ctx.Method.GetName() == "Walk")
@@ -79,6 +87,16 @@ static class SignatureChecks
                 // (the walk's phi: n = head, then n.Next; its Owned entry input is its path's root, head)
                 var phi = ctx.Body.Blocks.SelectMany(b => b.Phis).LastOrDefault(x => x.Kind == Il2Wasm.IL.Ir.VK.Ref && x.A.Any(a => a.Op == Il2Wasm.IL.Ir.Opc.LdFld));
                 lock (callees) walkPhi = phi == null ? "no phi" : plan.Own[phi].Kind.ToString();
+            }
+            if (ctx.Method.OwningType is MetadataType kt && kt.GetName() == "S" && ctx.Method.GetName() == "Pick")
+            {
+                var phi = ctx.Body.Blocks.SelectMany(b => b.Phis).FirstOrDefault(x => x.Kind == Il2Wasm.IL.Ir.VK.Ref);
+                lock (callees) pickPhi = phi == null ? "no phi" : plan.Own[phi].Kind.ToString();
+            }
+            if (ctx.Method.OwningType is MetadataType ct2 && ct2.GetName() == "S" && ctx.Method.GetName() == "Main")
+            {
+                var chains = ctx.Body.Blocks.SelectMany(b => b.Code).Where(n => n.Op == Il2Wasm.IL.Ir.Opc.Call && n.X is MethodDesc cm && cm.GetName() == "Chain");
+                lock (callees) callees["Main.Chain"] = string.Join(" ", chains.Select(n => plan.Callees[n].Suffix is { Length: > 0 } s ? s : "entry"));
             }
             if (ctx.Method.OwningType is MetadataType pt && pt.GetName() == "S" && ctx.Method.GetName() is "Pin" or "PinField" or "PinNew")
                 lock (callees) deadVars[ctx.Method.GetName()] = plan.DeadVars.Count;
@@ -120,5 +138,13 @@ static class SignatureChecks
         c.Eq("a pinned call result: no dead variable", deadVars.GetValueOrDefault("PinNew", -1), 0);
         // (a borrow of a field could flip while the raw pointer, which no borrow tracks, is in use: it keeps its count)
         c.Eq("a pinned field's borrow: no dead variable", deadVars.GetValueOrDefault("PinField", -1), 0);
+        // a phi over two persistent statics' loads is a borrow (Plan's persistent phis; IL2WASM_NO_PERSISTENT_PHIS=1: Owned)
+        bool noPPhi = Environment.GetEnvironmentVariable("IL2WASM_NO_PERSISTENT_PHIS") == "1" || Environment.GetEnvironmentVariable("IL2WASM_NO_PERSISTENT_LOADS") == "1";
+        c.Eq("a phi over persistent statics: borrowed", pickPhi, noPPhi ? "Owned" : "Guaranteed");
+        // `return this` after a call and a store still returns a borrow of the parameter, which the caller holds
+        // (Signatures.ReturnPath; IL2WASM_NO_RETURN_THIS_THROUGH_CALLS=1: the Entry only)
+        bool noRet = Environment.GetEnvironmentVariable("IL2WASM_NO_RETURN_THIS_THROUGH_CALLS") == "1";
+        c.Eq("return this through a call: a borrowed-return variant", Signatures.VariantsOf(sol, M("Node", "Chain")).Any(v => v.Kind == VariantKind.BorrowReturn), !noRet);
+        c.Eq("return this through a call: the chained calls take it", callees.GetValueOrDefault("Main.Chain"), noRet ? "entry entry" : "|retborrow |retborrow");
     }
 }

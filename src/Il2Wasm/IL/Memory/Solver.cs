@@ -346,6 +346,49 @@ public sealed partial class ProgramSolution
     readonly Dictionary<MethodDesc, HashSet<MethodDesc>?> _inTry = new();
     KeySet[]? _returnMods, _local;
     List<(int Callee, bool Full)>[]? _rsucc;
+    /// <summary>Per method, the return-path effects of its calls that are taken at the call site instead of the callee's
+    /// (ElementsClearedIn).</summary>
+    KeySet?[]? _retExtra;
+
+    static readonly bool s_noSiteEffects = Environment.GetEnvironmentVariable("IL2WASM_NO_SITE_EFFECTS") == "1";
+
+    /// <summary>Array.Clear(Array), Array.Clear(Array, int, int) and Il2WasmArrays.ClearCounted: on the runs that
+    /// return, each writes only the elements of the array it is given, zeros over them, and releases their old values
+    /// (Array.Mono.cs, Boundary/Arrays.cs: ClearCounted's ClearElements when the elements hold counts, else the raw
+    /// clears). By name, a contract of this repository's files (docs/AUDIT.md).</summary>
+    static bool ClearsElements(MethodDesc c) => c.Signature.Length is 1 or 3 && c.OwningType is MetadataType t && t.Module == t.Context.SystemModule
+        && (c.GetName() == "Clear" && t.GetName() == "Array" && t.GetNamespace() == "System" || c.GetName() == "ClearCounted" && t.GetName() == "Il2WasmArrays" && t.GetNamespace() == "Il2Wasm.Runtime");
+
+    /// <summary>A clear's effects at a call site (ClearsElements), on its returning runs, when the type sets know the
+    /// array and no element type it can be holds a count: the elements' keys, nothing released. Null: not such a call,
+    /// or not known (the callee's own effects). IL2WASM_NO_SITE_EFFECTS=1: never.</summary>
+    public KeySet? ElementsClearedAt(MethodDesc caller, Il2Wasm.IL.Ir.Node call)
+    {
+        if (s_noSiteEffects || !TypeSetsSolved || call.Op != Il2Wasm.IL.Ir.Opc.Call || call.X is not MethodDesc c || !ClearsElements(c) || call.A.Length == 0) return null;
+        if (ExactTypes(caller, call.A[0]) is not { } ts) return null;
+        var keys = new List<int>();
+        foreach (var t in ts)
+        {
+            if (t is not ArrayType at || Il2Wasm.IL.Ir.Kinds.Counted(at.ElementType)) return null;
+            keys.Add(Keys.Intern(MemKey.Elem(at.ElementType)));
+        }
+        return new KeySet(Pool.Of(keys.Distinct().OrderBy(k => k).ToList()), false);
+    }
+
+    /// <summary>ElementsClearedAt joined over every call of the callee in the caller's body; null when one is not known.</summary>
+    KeySet? ElementsClearedIn(MethodDesc caller, MethodDesc callee)
+    {
+        if (s_noSiteEffects || !TypeSetsSolved || !ClearsElements(callee) || HeldBody(caller) is not { } body) return null;
+        KeySet? r = null;
+        foreach (var b in body.Blocks)
+            foreach (var x in b.Code)
+                if (x.Op == Il2Wasm.IL.Ir.Opc.Call && x.X is MethodDesc xm && xm == callee)
+                {
+                    if ((Il2Wasm.IL.Ir.CallKind)x.Sub != Il2Wasm.IL.Ir.CallKind.Direct || ElementsClearedAt(caller, x) is not { } e) return null;
+                    r = r == null ? e : Join(r.Value, e);
+                }
+        return r;
+    }
 
     /// <summary>IL2WASM_MEM_WHY, for the runs that return: the chain of return-path edges to the first method whose own
     /// effects, or a callee's whole Mods or release effects, make the ReturnMods Wild.</summary>
@@ -876,6 +919,7 @@ public sealed partial class ProgramSolution
         // (the return-path successors: callee id, and whether its whole Mods count, it is called inside a try or is a
         // static constructor, or only its return-path ones)
         var rsucc = new List<(int Callee, bool Full)>[n];
+        var retExtra = _retExtra = new KeySet?[n];
         var local = new KeySet[n];
         var rel = new int[total][];
         for (int i = 0; i < n; i++)
@@ -908,6 +952,8 @@ public sealed partial class ProgramSolution
                     int j = Methods.IdOf(c);
                     if (j < 0) return; // (outside the solution: already Wild above)
                     if (!full && _summaries[c] is { MayReturn: false } && DeclaredEffects(this, c) == null) return; // (it only throws)
+                    // (a clear of arrays whose elements hold no count, at every call of it here: their elements only)
+                    if (!full && ElementsClearedIn(m, c) is { } ek) { retExtra[i] = Join(retExtra[i] ?? KeySet.Empty, ek); return; }
                     rs.Add((j, full));
                 }
                 foreach (var c in s.Calls) Ret(c, inTry == null || inTry.Contains(c));
@@ -987,6 +1033,7 @@ public sealed partial class ProgramSolution
         {
             var m = Methods[i];
             rmods[i] = _local![i];
+            if (_retExtra![i] is { } extra) rmods[i] = Join(rmods[i], extra);
             if (DeclaredEffects(this, m) != null) continue;
             var types = _releasedReturning.GetValueOrDefault(m);
             if (types == null) { rmods[i] = Join(rmods[i], DestroyEffects(Object)); continue; }

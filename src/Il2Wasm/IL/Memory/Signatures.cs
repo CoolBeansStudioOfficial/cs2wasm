@@ -35,6 +35,7 @@ public static class Signatures
     static readonly bool s_noOwnedEntry = Environment.GetEnvironmentVariable("IL2WASM_NO_OWNED_ENTRY") == "1";
     /// <summary>IL2WASM_NO_BORROW_RETURN=1: no borrowed-return variant.</summary>
     static readonly bool s_noBorrowReturn = Environment.GetEnvironmentVariable("IL2WASM_NO_BORROW_RETURN") == "1";
+    static readonly bool s_noReturnThisThroughCalls = Environment.GetEnvironmentVariable("IL2WASM_NO_RETURN_THIS_THROUGH_CALLS") == "1";
     static readonly bool s_noStaticReturn = Environment.GetEnvironmentVariable("IL2WASM_NO_STATIC_RETBORROW") == "1";
     /// <summary>IL2WASM_HANDOVER_BREAK=1 (the rule's test): the call rule hands a last-use argument over, but the call
     /// goes to the Entry, which lends: the count handed over is never released (a leak the live-object check shows).</summary>
@@ -421,7 +422,7 @@ public static class Signatures
     {
         if (m.Signature.ReturnType is var rt && (rt.IsVoid || Kinds.Of(rt) != VK.Ref)) return null;
         BorrowPath? path = null;
-        bool any = false;
+        bool any = false, blocked = false;
         foreach (var b in body.Blocks)
             foreach (var x in b.Code)
             {
@@ -435,13 +436,15 @@ public static class Signatures
                         break;
                     }
                     case Opc.Call or Opc.CallI or Opc.NewObj or Opc.NewArr or Opc.Box or Opc.Throw or Opc.Rethrow or Opc.LocAlloc:
-                        if (!s_borrowReturnBreak) return null;
-                        break;
                     case Opc.StFld or Opc.StSFld or Opc.StElem or Opc.StInd or Opc.CpBlk or Opc.InitBlk or Opc.InitObj:
-                        if (!s_borrowReturnBreak) return null;
+                        if (!s_borrowReturnBreak) blocked = true;
                         break;
                 }
             }
+        // (a call or a store could let a field's object go, so a path with steps needs none; a whole parameter, which
+        // the caller holds over the call, or a persistent static, survives them: StringBuilder.Append's `return this`.
+        // IL2WASM_NO_RETURN_THIS_THROUGH_CALLS=1: any call or store keeps the Entry only)
+        if (blocked && !(path is { Steps.Length: 0, Root: RootKind.Arg or RootKind.Static } && !s_noReturnThisThroughCalls)) return null;
         return path;
     }
 

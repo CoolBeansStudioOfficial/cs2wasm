@@ -110,6 +110,18 @@ static class SolverChecks
         }
         """;
 
+    // (Array.Clear of a char[] and of a string[]: the first's elements hold no count)
+    const string Clears = """
+        using System;
+        using System.Runtime.CompilerServices;
+        static class P
+        {
+            [MethodImpl(MethodImplOptions.NoInlining)] static void Wipe(char[] a) => Array.Clear(a);
+            [MethodImpl(MethodImplOptions.NoInlining)] static void WipeStrings(string[] a) => Array.Clear(a, 0, a.Length);
+            static void Main() { var c = new char[] { 'x' }; Wipe(c); var s = new string[] { new string('y', 2) }; WipeStrings(s); Console.WriteLine((int)c[0] + (s[0] == null ? 1 : 0)); }
+        }
+        """;
+
     // (B is stored into an A[] only through MemoryMarshal.GetArrayDataReference)
     const string ArrayDataRef = """
         using System;
@@ -117,10 +129,12 @@ static class SolverChecks
         using System.Runtime.InteropServices;
         class A { public virtual int M() => 1; }
         sealed class B : A { public override int M() => 2; }
+        sealed class C : A { public override int M() => 3; }
         static class P
         {
             [MethodImpl(MethodImplOptions.NoInlining)] static void Put(A[] arr) => MemoryMarshal.GetArrayDataReference(arr) = new B();
-            static void Main() { var arr = new A[] { new A() }; Put(arr); Console.WriteLine(arr[0].M()); }
+            [MethodImpl(MethodImplOptions.NoInlining)] static void PutAt(A[] arr, int i) => Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(arr), i) = new C();
+            static void Main() { var arr = new A[] { new A(), new A() }; Put(arr); PutAt(arr, 1); Console.WriteLine(arr[0].M() + arr[1].M()); }
         }
         """;
 
@@ -255,6 +269,19 @@ static class SolverChecks
             c.Eq("borrows: a load held across a call on a receiver that can only be null", kind, "Guaranteed");
         }
         {
+            // a call of Array.Clear on arrays whose elements hold no count writes, on its returning runs, only their
+            // elements: the effect is taken at the call site by the array's types (ProgramSolution.ElementsClearedAt;
+            // IL2WASM_NO_SITE_EFFECTS=1: the callee's own, Wild through Il2WasmArrays.ClearElements). On a string[] the
+            // callee's own effects stay
+            var sol = SecondSolve(dir, "solver_clears", Clears);
+            Internal.TypeSystem.MethodDesc Find(string name) => sol.Methods.Items.First(m => m.GetName() == name && m.OwningType.ToString()!.EndsWith("P"));
+            var wipe = sol.ReturnMods(Find("Wipe"));
+            var strs = sol.ReturnMods(Find("WipeStrings"));
+            bool noSite = Environment.GetEnvironmentVariable("IL2WASM_NO_SITE_EFFECTS") == "1";
+            c.True($"solver: Array.Clear of a char[] writes its elements only on return (Wild {wipe.Wild}; of a string[]: Wild {strs.Wild})",
+                noSite ? wipe.Wild : !wipe.Wild && wipe.Keys.Items.ToArray().All(k => sol.Keys[k].Kind == KeyKind.Elem));
+        }
+        {
             // a write through MemoryMarshal.GetArrayDataReference<T>(arr) is a write to the array's elements, Elem(T)
             // (TypeSets.ElementAddress; its IL's address is Array.RawData's byte field, which no element read sees.
             // IL2WASM_NO_ELEMENT_ADDRESSES=1: the field)
@@ -264,6 +291,10 @@ static class SolverChecks
             bool noAddr = Environment.GetEnvironmentVariable("IL2WASM_NO_ELEMENT_ADDRESSES") == "1";
             c.True("type sets: a write through GetArrayDataReference reaches the elements: Elem(A) " + (elem == null ? "unknown" : "{" + string.Join(", ", elem) + "}"),
                 sol.TypeSetsSolved && elem != null && elem.Any(t => t.EndsWith("B")) != noAddr);
+            // (and one through Unsafe.Add of it lands there too, not in Slot(A): IL2WASM_NO_ELEMENT_ARITHMETIC=1 the Slot)
+            bool noArith = noAddr || Environment.GetEnvironmentVariable("IL2WASM_NO_ELEMENT_ARITHMETIC") == "1";
+            c.True("type sets: a write through Unsafe.Add of it too: Elem(A) " + (elem == null ? "unknown" : "{" + string.Join(", ", elem) + "}"),
+                sol.TypeSetsSolved && elem != null && elem.Any(t => t.EndsWith("C")) != noArith);
         }
         {
             // a destroy releases what a load of each field would give: Holder.F, declared object, holds only strings, so
@@ -282,6 +313,13 @@ static class SolverChecks
             var rel = sol.ReleasedBy(set);
             string relShow = rel == null ? "unknown" : string.Join(", ", rel);
             c.True($"solver: the old value of the holder's field is a string ({relShow})", off ? rel == null || rel.Any(t => t.IsObject) : rel != null && !rel.Any(t => t.IsObject) && rel.Any(t => t.IsString));
+            // a raw clear of memory without references writes no program key (IntrinsicWrites.NoReferences, the trust
+            // boundary in docs/AUDIT.md; IL2WASM_NO_CLEAR_NO_REFS=1: Wild)
+            var sh = (Internal.TypeSystem.MetadataType)holder!.Context.SystemModule.GetType("System"u8, "SpanHelpers"u8);
+            var cwr = sh.GetMethods().First(m => m.GetName() == "ClearWithoutReferences");
+            var ce = IntrinsicSignatures.Effects(sol, cwr, true);
+            bool noClear = Environment.GetEnvironmentVariable("IL2WASM_NO_CLEAR_NO_REFS") == "1";
+            c.True($"solver: SpanHelpers.ClearWithoutReferences writes no key (Wild {ce.Wild}, {ce.Keys.Count} keys)", noClear ? ce.Wild : !ce.Wild && ce.Keys.IsEmpty);
         }
         foreach (var (name, source, hasDependents) in new[] { ("solver_plain", Plain, false), ("solver_dependents", Dependents, true) })
         {

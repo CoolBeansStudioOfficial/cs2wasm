@@ -948,6 +948,8 @@ sealed class ProgramBorrows
     /// that return: their ReturnMods ∪ ReleaseEffects, and nothing for a target that never returns.</summary>
     public KeySet CallEffects(Node call, bool full = true, MethodDesc? caller = null)
     {
+        // (a clear of arrays whose elements hold no count: their elements only, ProgramSolution.ElementsClearedAt)
+        if (!full && caller != null && (CallKind)call.Sub == CallKind.Direct && _s.ElementsClearedAt(caller, call) is { } cleared) return cleared;
         // (a virtual call's targets over its receiver's type set, when the type sets know it)
         var typed = caller != null && call.Op == Opc.Call && (CallKind)call.Sub != CallKind.Direct ? _s.CallTargetsOf(caller, call.Id) : null;
         var targets = typed ?? _s.CallTargets(call);

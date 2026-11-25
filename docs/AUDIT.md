@@ -6281,6 +6281,77 @@ Not run: the homelab suite and the self-host check on this commit.
   (none lost; FrozenDictionaryCompatibility gained with the main merge). Kernel removal shares: DictionaryInts 83.5%,
   LinkedNodes 94.2%, Linq 88.8%, ListSort 87.9%, NBody 100%, Shapes 99.9%, Strings 75.1%, Tree 94.4%, WordCount 82.4%.
 
+### S1 row b: raw clears, Strings' phis and `return this`, element addresses, clears by call site (claude/s1-typesets, 2026-11-24)
+
+- SpanHelpers.ClearWithoutReferences writes no program key (IntrinsicWrites.NoReferences; IL2WASM_NO_CLEAR_NO_REFS=1:
+  Wild). Trust boundary: its callers (Array.Clear, Span<T>.Clear, Buffer) reach it only when
+  RuntimeHelpers.IsReferenceOrContainsReferences<T>() is false (lowering answers it with Kinds.Counted, Runtime2.cs)
+  or ObjectHasReferences says the array holds none, so the memory it zeroes holds no counted reference. Every key a
+  borrow, a persistent static or a type set reads is of counted references. Test: SolverChecks.
+- Strings, 75.1% to 87.6%:
+  - a phi over persistent statics' borrows is a borrow (Plan, IL2WASM_NO_PERSISTENT_PHIS=1: Owned). This is
+    Number.GetTwoDigitsBytesRef's `useChars ? CharsAsBytes : Bytes`, 315k count operations;
+  - `return this` through calls and stores. Signatures.ReturnPath keeps a borrowed return whose path is a whole
+    parameter or a persistent static with no steps, since a call or a store cannot let either go. Plan gives a direct
+    call's result the matching operand's borrow from the |retborrow entry; before this, a call result was never made
+    a borrow of an Arg-rooted return. Switch: IL2WASM_NO_RETURN_THIS_THROUGH_CALLS=1. This is StringBuilder.Append.
+    Linq went from 88.8% to 91.9% with it.
+  - Tests: SignatureChecks (Pick, Chain).
+- A write through MemoryMarshal.GetArrayDataReference<T>(arr) was not seen as a write to the array's elements. Its
+  IL's address is Array.RawData's byte field, which no element read sees. It was hidden only because that field
+  escapes into spans, and element reads joined the Slot keys. TypeSets.ElementAddress now gives the call Elem(T)
+  (IL2WASM_NO_ELEMENT_ADDRESSES=1: the field). Tests: SolverChecks, FrameworkPrograms f33_array_data_reference.
+  Merged to main alone (claude/s1-arraydataref).
+- Unsafe.Add, Subtract, AddByteOffset and SubtractByteOffset of an address that is only array elements stay in those
+  elements (TypeSets.ElementArithmetic; IL2WASM_NO_ELEMENT_ARITHMETIC=1: unknown). A field's address moved on could
+  be another field's, so this holds for elements only. SharedArrayPoolPartitions' TryPush now writes Elem(Array).
+  Test: SolverChecks.
+- Clears by call site (ProgramSolution.ElementsClearedAt, Borrows.CallEffects; IL2WASM_NO_SITE_EFFECTS=1: the
+  callee's own). Array.Clear(Array), Array.Clear(Array, int, int) and Il2WasmArrays.ClearCounted, on their returning
+  runs, write only the elements of the array they are given, and release only those elements' old values. That is a
+  contract by name of this repository's Array.Mono.cs and Boundary/Arrays.cs. At a call where the type sets know the
+  array and no element type it can be holds a count, the call's return-path effect is those elements' keys and
+  nothing released, instead of the callee's (Wild through the ClearElements intrinsic). Calls inside a try keep the
+  callee's whole effects. Test: SolverChecks (a char[] and a string[]).
+- Parked, with the evidence: element escapes, and keys by exact array type. WordCount's FindValue still has return
+  effects that are Wild. Its chain runs through SharedArrayPool.Rent, whose release of what
+  SharedArrayPoolPartitions.TryPop returns is a destroy of any array. That set is unknown because the element read
+  of an Array[] joins Slot(object) and, by covariance, Elem(object), and both are unknown. Findings:
+  - (a) aliasing by the Unsafe.As pairs the bodies make was built and reverted. The dumps were identical on WordCount
+    (97,438 lines) and Linq (121,252), with the unknown counts unchanged on five kernels. A read filters by its static
+    type, so a reinterpretation between unrelated classes only matters for values that break the static type, and the
+    filter drops those.
+  - (b) element reads joining the Slot keys only once the elements' address escaped was built, then parked. The
+    patch is at scratchpad/elem-escapes-wip.patch. Its escape triggers:
+    - an element address reaching an operation the solve does not follow;
+    - GetArrayDataReference(Array) as Elem(object);
+    - GetRawData by its operand's types;
+    - Unsafe.AsRef, Read or Write of a counted type through a void* that is not stackalloc or null;
+    - a raw reference store. The [RawStores] methods are exempt.
+    Done soundly, every element escapes in every program measured: WordCount, Linq, ListSort, Strings,
+    DictionaryInts, and hello world. The single cause is MethodBaseInvoker.InvokeWithManyArgs, which takes
+    `ref obj.GetRawData()` of every argument object (types unknown) into a ByReference that reaches the invoked
+    method's byref parameters. Reflection invoke is reachable from Console.WriteLine(42). To make (b) live, the
+    invoker's GetRawData would need a contract: the data of a boxed argument is never an array's elements. That is a
+    trust boundary to be stated against dotnet/runtime's invoker code.
+  - (c) element keys by exact array type, needed for the Elem(object) covariance join, waits on (b). The diagnostic
+    shows 6 reference-element writes with unknown arrays in WordCount (190 known), all object[] in reflection code.
+- Bars at 947d914 [desk, fw2]:
+  - IL tests: 187 naive, 218 planned, none failed;
+  - kernel removal shares:
+
+    | Kernel | Share |
+    |---|---|
+    | DictionaryInts | 83.5% |
+    | LinkedNodes | 94.2% |
+    | Linq | 91.9% |
+    | ListSort | 88.2% |
+    | NBody | 100% |
+    | Shapes | 99.9% |
+    | Strings | 87.6% |
+    | Tree | 94.4% |
+    | WordCount | 82.4% |
+
 ### IL destroy depth: the depth queue, the sealed tail, leaves and a br_table dispatch (claude/il-destroy-depth, 2026-11-24)
 
 - Bug [run, desk]: dropping a 200,000-item acyclic chain nested rt.release -> rt.destroy as deep as the chain, and
