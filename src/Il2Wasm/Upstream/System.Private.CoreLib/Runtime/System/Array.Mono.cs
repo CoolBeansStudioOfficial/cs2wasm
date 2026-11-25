@@ -539,7 +539,58 @@ namespace System
         private static void SetValueImpl(ObjectHandleOnStack arr, ObjectHandleOnStack value, int pos)
         {
             Array a = Il2Wasm.Runtime.Il2WasmArrays.Handle<Array>(arr);
-            Il2Wasm.Runtime.Il2WasmArrays.SetBoxed(a, pos, Il2Wasm.Runtime.Il2WasmArrays.Handle<object>(value));
+            Il2Wasm.Runtime.Il2WasmArrays.SetBoxed(a, pos, WidenedForStore(a, Il2Wasm.Runtime.Il2WasmArrays.Handle<object>(value)));
+        }
+
+        // il2wasm: a primitive stored into an array of another primitive type is converted when the CLR widens it (int
+        // into long[], char into double[]); any other primitive is an ArgumentException, as the CLR's SetValue gives it.
+        static object? WidenedForStore(Array a, object? v)
+        {
+            if (v is null) return null;
+            int ve = Il2Wasm.Runtime.Rt.TypeId(v), de = Il2Wasm.Runtime.TypeInfo.ElementId(Il2Wasm.Runtime.Rt.TypeId(a));
+            int sk = Il2Wasm.Runtime.Il2WasmArrays.PrimitiveKind(ve), dk = Il2Wasm.Runtime.Il2WasmArrays.PrimitiveKind(de);
+            if (sk == 0 || dk == 0 || sk == dk) return v;
+            sk = WidenKind(sk); dk = WidenKind(dk);
+            if (!CanWiden(sk, dk)) throw new ArgumentException(SR.Format(SR.Arg_ObjObjEx, v.GetType(), a.GetType().GetElementType()));
+            return WidenValue(v, dk);
+        }
+
+        // (the value converted to the element kind d; CanWiden's conversions are exact, rounding only into float and double)
+        static object WidenValue(object v, int d)
+        {
+            long sv = 0;
+            ulong uv = 0;
+            bool signed = true;
+            switch (v)
+            {
+                case float f: return d == 0x0D ? (double)f : (object)f;
+                case double x: return x;
+                case char c: uv = c; signed = false; break;
+                case byte b: uv = b; signed = false; break;
+                case ushort us: uv = us; signed = false; break;
+                case uint ui: uv = ui; signed = false; break;
+                case ulong ul: uv = ul; signed = false; break;
+                case sbyte sb: sv = sb; break;
+                case short ss: sv = ss; break;
+                case int i: sv = i; break;
+                case long l: sv = l; break;
+                default: throw new InvalidCastException(SR.InvalidCast_StoreArrayElement);
+            }
+            switch (d)
+            {
+                case 0x03: return (char)uv;
+                case 0x04: return signed ? (sbyte)sv : (sbyte)uv;
+                case 0x05: return signed ? (byte)sv : (byte)uv;
+                case 0x06: return signed ? (short)sv : (short)uv;
+                case 0x07: return signed ? (ushort)sv : (ushort)uv;
+                case 0x08: return signed ? (int)sv : (int)uv;
+                case 0x09: return signed ? (uint)sv : (uint)uv;
+                case 0x0A: return signed ? sv : (long)uv;
+                case 0x0B: return signed ? (ulong)sv : uv;
+                case 0x0C: return signed ? (float)sv : (float)uv;
+                case 0x0D: return signed ? (double)sv : (double)uv;
+                default: throw new InvalidCastException(SR.InvalidCast_StoreArrayElement);
+            }
         }
 
         private static void InitializeInternal(ObjectHandleOnStack arr)
