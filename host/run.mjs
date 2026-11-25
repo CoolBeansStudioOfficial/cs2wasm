@@ -120,6 +120,12 @@ if (instance.exports.il2wasm_rc_counts) { // (a module built with IL2WASM_COUNT_
 `);
   }
 }
+// (a module built with IL2WASM_IL_COUNT_RC=1: the count operations it ran, calls and those that changed a count)
+if (instance.exports.il2wasm_rc_calls) {
+  const v = new BigInt64Array(memory.buffer, instance.exports.il2wasm_rc_calls(), 4);
+  process.stderr.write(`[host] rc: ${v[0]} retain calls, ${v[1]} release calls, ${v[2]} retains changed, ${v[3]} releases changed
+`);
+}
 // (a module built with IL2WASM_MEMSTATS=1: where its heap's memory is, at its last growth and now)
 if (instance.exports.il2wasm_memstats) { try { instance.exports.il2wasm_memstats(); } finally { flush(); } }
 if (r !== undefined && process.env.IL2WASM_PRINT_RESULT) console.log(`=> ${r}`);

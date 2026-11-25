@@ -57,6 +57,20 @@ public sealed partial class IlCompiler
     /// <summary>Count the objects the runtime allocates and frees (Rt.AllocObject, FreeObject, FreeFixed), exported as
     /// il2wasm_live: the tests' leak check on the IL CoreLib (IL2WASM_IL_COUNT_OBJECTS=1).</summary>
     public bool CountObjects = Environment.GetEnvironmentVariable("IL2WASM_IL_COUNT_OBJECTS") == "1";
+    /// <summary>Count the count operations a run does (IL2WASM_IL_COUNT_RC=1, the measure of SPEC 4.1's passes): rt.retain and
+    /// rt.release count their calls and the calls that changed a count (a live, mortal object) into four 64-bit
+    /// counters (retain calls, release calls, retains changed, releases changed) that il2wasm_rc_calls gives the address
+    /// of; host/run.mjs prints them. The back end's written-out fast paths are off in such a build, so every count is
+    /// a call.</summary>
+    public bool CountRc = Environment.GetEnvironmentVariable("IL2WASM_IL_COUNT_RC") == "1";
+    IAddress? _rcCounts;
+    /// <summary>CountRc: one more at counter i (0 retain calls, 1 release calls, 2 retains changed, 3 releases changed).</summary>
+    internal void CountRcEvent(Emitter e, int i)
+    {
+        if (!CountRc) return;
+        _rcCounts ??= NamedStatic("il2wasm.rc_counts", 32, 8);
+        e.I32Addr(_rcCounts); e.I32Addr(_rcCounts); e.Load(WOp.I64Load, 8 * i); e.I64(1); e.Op(WOp.I64Add); e.Store(WOp.I64Store, 8 * i);
+    }
     bool _countWrapping;
     IAddress? _counted;
     /// <summary>What is not compiled yet traps where it is reached (each one a warning), instead of failing the build:
@@ -865,6 +879,14 @@ public sealed partial class IlCompiler
         if (TryCoreMethod("Il2Wasm.Runtime", "Rt", "ReportUnhandled") is { } report) { e.Get(ex); e.Call(FunctionFor(report)); }
         e.Get(ex); e.Call(Rt.Release);
 
+        if (CountRc)
+        {
+            var cf = Module.AddFunction("il2wasm_rc_calls", new FuncType([], [ValType.I32]));
+            cf.Exports.Add("il2wasm_rc_calls");
+            _rcCounts ??= NamedStatic("il2wasm.rc_counts", 32, 8);
+            new Emitter(cf).I32Addr(_rcCounts);
+            Module.CountingRc = true;
+        }
         if (CountObjects)
         {
             var lf = Module.AddFunction("il2wasm_live", new FuncType([], [ValType.I32]));
@@ -1142,9 +1164,10 @@ public sealed partial class IlCompiler
                 int r = e.AddLocal(I);
                 c.WatchEvent(e, 1);
                 c.CheckedCount(e, false); // il-runtime: the checked build traps on a freed object (Checks.cs)
+                c.CountRcEvent(e, 0);
                 e.Get(0); e.If();
                 e.Get(0); e.Load(WOp.I32Load); e.Tee(r); e.I32(0); e.Op(WOp.I32GtS);
-                e.If(); e.Get(0); e.Get(r); e.I32(1); e.Op(WOp.I32Add); e.Store(WOp.I32Store); e.End();
+                e.If(); c.CountRcEvent(e, 2); e.Get(0); e.Get(r); e.I32(1); e.Op(WOp.I32Add); e.Store(WOp.I32Store); e.End();
                 e.End();
                 e.Get(0);
                 return _retain;
@@ -1164,11 +1187,12 @@ public sealed partial class IlCompiler
                 // frees it traps, so its stack shows who)
                 c.WatchEvent(e, 2);
                 c.CheckedCount(e, true); // il-runtime: the checked build traps on a release too many (Checks.cs)
+                c.CountRcEvent(e, 1);
                 e.Get(0); e.If();
                 e.Get(0); e.Load(WOp.I32Load); e.Tee(r); e.I32(1); e.Op(WOp.I32GtS);
-                e.If(); e.Get(0); e.Get(r); e.I32(1); e.Op(WOp.I32Sub); e.Store(WOp.I32Store);
+                e.If(); c.CountRcEvent(e, 3); e.Get(0); e.Get(r); e.I32(1); e.Op(WOp.I32Sub); e.Store(WOp.I32Store);
                 e.Else();
-                e.Get(r); e.I32(1); e.Op(WOp.I32Eq); e.If(); e.Get(0); e.I32(0); e.Store(WOp.I32Store); e.Get(0); e.Call(Destroy); e.End();
+                e.Get(r); e.I32(1); e.Op(WOp.I32Eq); e.If(); c.CountRcEvent(e, 3); e.Get(0); e.I32(0); e.Store(WOp.I32Store); e.Get(0); e.Call(Destroy); e.End();
                 e.End();
                 e.End();
                 return _release;

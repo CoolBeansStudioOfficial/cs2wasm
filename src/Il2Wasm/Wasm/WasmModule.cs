@@ -15,6 +15,8 @@ internal sealed class WasmModule
     public bool MemoryShared = true;
     /// <summary>The program can start threads (another thread may drop a reference this one reads).</summary>
     public bool UsesThreads = true;
+    /// <summary>A build that counts its count operations (the IL front end's IL2WASM_IL_COUNT_RC): no written-out fast paths.</summary>
+    public bool CountingRc;
 
     public WasmFunction AddFunction(string name, FuncType type)
     {
@@ -389,7 +391,7 @@ internal sealed class WasmModule
             if (FieldHoist != null) { foreach (var f in Functions) if (!f.IsImport) FieldLoads.Strip(f); FieldHoist = null; }
             Step("null checks again");
             // (the counts' common case written out in code that runs often: RcFastPaths.cs)
-            RcFastPaths.Run(this, UsesThreads);
+            RcFastPaths.Run(this, UsesThreads || CountingRc);
             Step("count fast paths");
             if (Environment.GetEnvironmentVariable("IL2WASM_NO_IF_CONVERT") != "1") EachFunction(f => IfConvert.Run(f));
             Step("if convert");

@@ -27,7 +27,18 @@ public static class Ownership
         /// into: each of those lives as long as the address is used (a GC's interior pointer: the object must not be
         /// freed under it).</summary>
         public readonly Dictionary<Node, List<Node>> Bases = new();
+        /// <summary>Reference values that hold no count of their own (borrows, SPEC 4.1): something else keeps their
+        /// object alive for as long as they are live. They are never released, never moved (a store or a return of
+        /// one counts it), and not released when an exception leaves.</summary>
+        public readonly HashSet<Node> Borrowed = [];
+        /// <summary>A value that holds a count: a reference or a struct with references, not a borrow.</summary>
+        public bool Counted(Node n) => IsRef(n) && !Borrowed.Contains(n);
     }
+
+    /// <summary>IL2WASM_NO_BORROWED_ARGS=1: every reference argument is counted on entry (the naive form). By default
+    /// a reference argument borrows its caller's count: every caller keeps what it passes alive for the whole call (an
+    /// operand of a call is never moved into it, so the caller's count, or its own source's, outlives the call).</summary>
+    static readonly bool s_noBorrowedArgs = System.Environment.GetEnvironmentVariable("IL2WASM_NO_BORROWED_ARGS") == "1";
 
     /// <summary>The operations whose address result points into one of their operands (the operand's object, or the
     /// object an operand address points into): field and element addresses, a box's data, address arithmetic and
@@ -102,7 +113,7 @@ public static class Ownership
             && m.OwningType is Internal.TypeSystem.MetadataType { Name: var _ } ut && ut.GetName() == "Unsafe" && HeldElsewhere(v.A[0]);
 
     /// <summary>The counted values a use of operand a keeps alive: a itself, or the bases of an address.</summary>
-    static IEnumerable<Node> Kept(Node a, Info info) => IsRef(a) ? [a] : info.Bases.TryGetValue(a, out var l) ? l : [];
+    static IEnumerable<Node> Kept(Node a, Info info) => IsRef(a) ? (info.Borrowed.Contains(a) ? [] : [a]) : info.Bases.TryGetValue(a, out var l) ? l.Where(info.Counted) : [];
 
     /// <summary>A value that holds counts: a reference, or a struct with references in it.</summary>
     static bool IsRef(Node n) => n.Kind == VK.Ref || n.Kind == VK.Struct && n.Type != null && Kinds.Counted(n.Type);
@@ -119,7 +130,8 @@ public static class Ownership
     {
         SplitEdges(body);
         var info = new Info();
-        foreach (var b in body.Blocks) { foreach (var n in b.Phis) if (IsRef(n)) info.RefValues.Add(n); foreach (var n in b.Code) if (IsRef(n)) info.RefValues.Add(n); }
+        if (!s_noBorrowedArgs) foreach (var a in body.Args) if (a.Kind == VK.Ref) info.Borrowed.Add(a);
+        foreach (var b in body.Blocks) { foreach (var n in b.Phis) if (info.Counted(n)) info.RefValues.Add(n); foreach (var n in b.Code) if (info.Counted(n)) info.RefValues.Add(n); }
         FindBases(body, info);
         Liveness(body, info);
         foreach (var b in body.Blocks) Insert(body, b, info);
@@ -127,7 +139,7 @@ public static class Ownership
         // (each right after its argument: before the release of an argument nothing uses, which follows it)
         var entry = body.Blocks[0];
         foreach (var a in body.Args)
-            if (IsRef(a)) entry.Code.Insert(entry.Code.IndexOf(a) + 1, new Node { Op = Opc.Retain, Kind = VK.Void, A = [a], Block = entry, Id = body.NextId() });
+            if (info.Counted(a)) entry.Code.Insert(entry.Code.IndexOf(a) + 1, new Node { Op = Opc.Retain, Kind = VK.Void, A = [a], Block = entry, Id = body.NextId() });
         return info;
     }
 
@@ -228,17 +240,17 @@ public static class Ownership
             foreach (var phi in s.Phis)
             {
                 var v = phi.A[pi];
-                if (!IsRef(v)) continue;
+                if (!info.Counted(v)) continue;
                 if (!liveOn.Contains(v)) { info.PhiMoves.Add((phi, pi)); liveOn.Add(v); }
             }
             // what moves into a phi is not live after the block
             foreach (var phi in s.Phis) if (info.PhiMoves.Contains((phi, pi))) live.Remove(phi.A[pi]);
-            foreach (var phi in s.Phis) if (IsRef(phi.A[pi]) && !info.PhiMoves.Contains((phi, pi))) live.Add(phi.A[pi]);
+            foreach (var phi in s.Phis) if (info.Counted(phi.A[pi]) && !info.PhiMoves.Contains((phi, pi))) live.Add(phi.A[pi]);
             // (values counted again for a phi are live through the copy: they are released at the successor's
             // entry if nothing else needs them there)
-            foreach (var phi in s.Phis) if (IsRef(phi.A[pi])) live.Add(phi.A[pi]);
+            foreach (var phi in s.Phis) if (info.Counted(phi.A[pi])) live.Add(phi.A[pi]);
             // (an address copied into a phi: its objects live through the copy)
-            foreach (var phi in s.Phis) if (!IsRef(phi.A[pi]) && info.Bases.TryGetValue(phi.A[pi], out var pb)) live.UnionWith(pb);
+            foreach (var phi in s.Phis) if (!IsRef(phi.A[pi]) && info.Bases.TryGetValue(phi.A[pi], out var pb)) live.UnionWith(pb.Where(info.Counted));
         }
         var code = b.Code;
         var output = new List<Node>(code.Count * 2);
@@ -248,7 +260,7 @@ public static class Ownership
             var n = code[i];
             var after = new List<Node>();
             var before = new List<Node>();
-            if (IsRef(n) && !live.Contains(n) && !n.IsTerminator) after.Add(Count(Opc.Release, n, b, body));
+            if (info.Counted(n) && !live.Contains(n) && !n.IsTerminator) after.Add(Count(Opc.Release, n, b, body));
             live.Remove(n);
             if (n.Op is not (Opc.Retain or Opc.Release))
             {
@@ -256,7 +268,7 @@ public static class Ownership
                 for (int k = 0; k < n.A.Length; k++)
                 {
                     var v = n.A[k];
-                    if (!IsRef(v) || !seen.Add(v)) continue;
+                    if (!info.Counted(v) || !seen.Add(v)) continue;
                     bool lastUse = !live.Contains(v);
                     bool moved = false;
                     for (int j = k; j < n.A.Length; j++)
@@ -275,7 +287,7 @@ public static class Ownership
                     if (IsRef(n.A[k]) || !info.Bases.TryGetValue(n.A[k], out var bases)) continue;
                     foreach (var v in bases)
                     {
-                        if (!seen.Add(v)) continue;
+                        if (!info.Counted(v) || !seen.Add(v)) continue;
                         // (a terminator's: before it, as nothing runs after it here; the address it returns or
                         // branches with points into an object its caller or successor keeps)
                         // (but an object only this function holds, one it made or a call gave it, is not let go under
@@ -304,7 +316,7 @@ public static class Ownership
                     foreach (var tb in BlocksWithin(r.Try!).Concat(r.Filter != null && r.Filter != r ? BlocksWithin(r.Filter) : []))
                     {
                         foreach (var v in info.LiveIn[tb]) dead.Add(v);
-                        foreach (var n in tb.Phis.Concat(tb.Code)) if (IsRef(n)) dead.Add(n);
+                        foreach (var n in tb.Phis.Concat(tb.Code)) if (info.Counted(n)) dead.Add(n);
                     }
         dead.ExceptWith(info.LiveIn[b]);
         foreach (var phi in b.Phis) dead.Remove(phi);
