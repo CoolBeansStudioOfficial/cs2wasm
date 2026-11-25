@@ -3019,6 +3019,40 @@ the check, every weakened rule (seven) stopped, every rule off the same; `node t
 runs each, this branch's compiler and main's in turn: 139, 218, 215b, 131, 127 all the same on both, 187 3 of 200
 on both (`rounds: result 3`, the open leak of the row in docs/FINISH.md). The homelab's jobs: docs/FINISH.md's
 entry.
+- **A tree kept by a member that its list let go while code held it, in a group a static keeps (2026-11-23, branch
+  claude/leak-static-kid, from main 2440607; tests 300, 301).** Found by another session: `root.Kids = [s_keep, a,
+  b]` (s_keep also in a static), `a.Prev = b.Prev = root`, `root.Tag = new[] { a }`, then `root.Kids[1] = b` (or
+  `Remove(a)`, `RemoveAt`) while the code holds a; root let go, then a: root, a and b stayed (3 objects for .NET's
+  none), for as long as the static kept the group. Without the static's object in the list the group's total went to
+  zero and all of it went; without the code's reference the check at root's drop took a in (a top no code refers to)
+  and all of it went. Measured with `CS2WASM_ARENA_REPORT=1`: at root's check (`ev check root 3`, failed by one
+  reference from outside what it owns) a was unowned (`flags 0x402`: Held, one up-reference) with the list's old array
+  for its owner word, holding it; root's note of the outside kind, number 1, that hold. At a's last release nothing
+  ran: Dropped(a) returns at once (a container waiting to own it, the Tag array, not under a), and UpdateHold keeps
+  the hold (others than an owner refer to it, and with no owner every reference is such). **The cause:** a member
+  its owner lets go keeps the owner, for its up-references, for as long as anything but an owner refers to it; the
+  waiting container then never takes it over while it refers to it, the tree is no tree of owners, and no note counts
+  the code's reference to a member outside what the top owns, so nothing looks again when it goes.
+  - Done, at the cause (`Rt.TurnOver`, ArenaUnlinkOld right after OwnerLetGo): a member let go there while code holds
+    it, held, with a waiting container that is a living member of the group not under it, and every up-reference of
+    its in its own slots (nothing it owns refers up, by the counts: the bits-2 slots are its whole u) is taken over now:
+    the up-references become counted ones (UpPath down, the hold goes), it has no owner and the waiting container
+    adopts it (UpdateHold, Adopt), Reevaluate makes the references up-references again on the new chain. The tree is a
+    tree of owners again; root's check counts a among the members code holds, and a's release (TopHeld) makes the
+    check that frees them, at that release, as .NET. Constant work: sixteen slot bits, the walks up a store makes, Top
+    twice when a check has failed somewhere. With threads too (under the unlink's group lock; every member it touches
+    checked GroupHeld). Not done, as before: a member that owns what refers up; and, when a check has failed, a
+    waiting container under another top than the old owner's with an outside-kind note, or notes on the member or its
+    targets there (what comes under such a top would leave its number too high). `CS2WASM_NO_TURN_OVER=1`.
+  - Tests: 300 (store, Remove, RemoveAt; the static's object at none, first, middle, last; one or two members held, let
+    go in either order; finalizers and weak references; the list kept by code while root is let go first; the other
+    array another tree's that a static keeps) and 301 (a program with threads: built and let go on the main thread, on
+    another, built on another and let go on the main one). Both fail with the switch (checked), pass without.
+    origin/claude/determinism-1 at 53b4098 still has the leak (78 lines of 300, 72 of 301 wrong); merged with this
+    branch (clean, `git merge-tree`) both pass.
+  - Numbers (the desk, as-is against the switch, interleaved, two rounds): frames.mjs medians the same in every scene
+    (churn 0.059-0.061 against 0.059 ms, tree 0.037-0.038 against 0.037-0.039, collections, strings, bigdrop equal),
+    worst frames within the run-to-run range of both; bench.mjs 0.91x against 0.92x of NativeAOT-LLVM's.
 
 ### A4. Plugins (goal 3)
 
