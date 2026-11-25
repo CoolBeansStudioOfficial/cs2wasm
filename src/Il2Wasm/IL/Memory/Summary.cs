@@ -89,6 +89,8 @@ public sealed class MethodSummary
     public readonly List<TypeDesc> AttributeQueryTargets = [];
     public readonly List<TypeDesc> AttributeQueryTypes = [];
     public bool AttributeQueryUnknownTarget, AttributeQueryUnknownType;
+    public readonly List<TypeDesc> MarshalTargets = [];
+    public bool MarshalUnknown;
     public readonly List<TypeDesc> Aliased = [];
 
     // ---- reach edges (from the body lowering lowers)
@@ -170,13 +172,35 @@ public sealed class MethodSummary
         else AttributeQueryTypes.Add(asked);
     }
 
+    /// <summary>A marshalling call (Marshal.SizeOf, OffsetOf, StructureToPtr, PtrToStructure, DestroyStructure) made by code
+    /// outside the core library: the type it marshals, from its generic argument or a typeof argument. Otherwise (an
+    /// object's type, not named) the type is unknown: any candidate type then gets a record.</summary>
+    void NoteMarshalQuery(MethodDesc qm, Node n, MethodDesc caller)
+    {
+        if (qm.OwningType is not MetadataType ot || ot.GetNamespace() != "System.Runtime.InteropServices" || ot.GetName() != "Marshal") return;
+        if (qm.GetName() is not ("SizeOf" or "OffsetOf" or "StructureToPtr" or "PtrToStructure" or "DestroyStructure")) return;
+        if (caller.OwningType is MetadataType cm && cm.Module == cm.Context.SystemModule) return;
+        TypeDesc? target = null;
+        if (qm.HasInstantiation) target = qm.Instantiation.Length > 0 ? qm.Instantiation[0] : null;
+        else
+        {
+            int offset = qm.Signature.IsStatic ? 0 : 1;
+            for (int j = 0; j < qm.Signature.Length && target == null; j++)
+                if (qm.Signature[j] is MetadataType pt && pt.GetName() is "Type" && pt.GetNamespace() == "System")
+                    target = n.A.Length > j + offset && n.A[j + offset].Op == Opc.TypeOf && n.A[j + offset].X is TypeDesc tt ? tt : null;
+        }
+        // (a generic method over a class is shared: its argument is the canonical form, which names no one type)
+        if (target == null || target.ContainsSignatureVariables(treatGenericParameterLikeSignatureVariable: true) || target.IsCanonicalSubtype(CanonicalFormKind.Any)) MarshalUnknown = true;
+        else MarshalTargets.Add(target);
+    }
+
     void ConstantFacts(Body body, Sccp s)
     {
         var ret = Val.Top;
         foreach (var b in s.ExecutableBlocks)
             foreach (var n in b.Code)
             {
-                if (n.Op == Opc.Call && n.X is MethodDesc qm) NoteAttributeQuery(qm, n, body.Method);
+                if (n.Op == Opc.Call && n.X is MethodDesc qm) { NoteAttributeQuery(qm, n, body.Method); NoteMarshalQuery(qm, n, body.Method); }
                 switch (n.Op)
                 {
                     case Opc.StFld when n.X is FieldDesc sf:

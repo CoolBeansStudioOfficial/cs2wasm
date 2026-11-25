@@ -76,6 +76,8 @@ public sealed class ProgramFacts : ISccpOracle
         foreach (var t in sum.ArrayElementTypes) ArrayElementTypes.Add(t);
         foreach (var t in sum.AttributeQueryTargets) AttributeQueryTargets.Add(t);
         foreach (var t in sum.AttributeQueryTypes) AttributeQueryTypes.Add(t);
+        foreach (var t in sum.MarshalTargets) MarshalTargets.Add(t);
+        MarshalUnknown |= sum.MarshalUnknown;
         AttributeQueryUnknownTarget |= sum.AttributeQueryUnknownTarget;
         AttributeQueryUnknownType |= sum.AttributeQueryUnknownType;
         foreach (var (c, args) in sum.ArgMeets) Meet(c, args);
@@ -95,6 +97,10 @@ public sealed class ProgramFacts : ISccpOracle
     public readonly HashSet<TypeDesc> AttributeQueryTargets = [];
     public readonly HashSet<TypeDesc> AttributeQueryTypes = [];
     public bool AttributeQueryUnknownTarget, AttributeQueryUnknownType;
+    /// <summary>The types the program's marshalling calls (Marshal.SizeOf, OffsetOf, StructureToPtr, PtrToStructure,
+    /// DestroyStructure) name; MarshalUnknown when a call's type is not one the code names (any type then).</summary>
+    public readonly HashSet<TypeDesc> MarshalTargets = [];
+    public bool MarshalUnknown;
     readonly Dictionary<FieldDesc, Val> _fields = new();
 
     public Val InstanceField(Node load) => Previous != null && load.X is FieldDesc f ? Previous.Field(f) : Val.Bottom;
