@@ -118,10 +118,11 @@ namespace System
             ArgumentNullException.ThrowIfNull(sourceArray);
             ArgumentNullException.ThrowIfNull(destinationArray);
 
-            ArgumentOutOfRangeException.ThrowIfNegative(length);
-
+            // (the rank is checked before any index or length: a rank mismatch with a negative length is a RankException)
             if (sourceArray.Rank != destinationArray.Rank)
                 throw new RankException(SR.Rank_MustMatch);
+
+            ArgumentOutOfRangeException.ThrowIfNegative(length);
 
             if (sourceIndex < 0)
                 throw new ArgumentOutOfRangeException(nameof(sourceIndex), SR.ArgumentOutOfRange_NeedNonNegNum);
@@ -476,6 +477,11 @@ namespace System
                 && !Il2Wasm.Runtime.Rt.ElementFits(Il2Wasm.Runtime.TypeInfo.ElementId(dt), Il2Wasm.Runtime.TypeInfo.ElementId(st)))
             {
                 int de = Il2Wasm.Runtime.TypeInfo.ElementId(dt), data = Il2Wasm.Runtime.Il2WasmArrays.Data(src) + 4 * source_idx;
+                // (unrelated element types, neither way and no interface, throw even when there is nothing to copy)
+                int se = Il2Wasm.Runtime.TypeInfo.ElementId(st);
+                if (!Il2Wasm.Runtime.Rt.ElementFits(de, se) && !Il2Wasm.Runtime.Rt.ElementFits(se, de)
+                    && (Il2Wasm.Runtime.TypeInfo.Flags(de) & 9) == 0 && (Il2Wasm.Runtime.TypeInfo.Flags(se) & 8) == 0)
+                    throw new ArrayTypeMismatchException(SR.ArrayTypeMismatch_CantAssignType);
                 for (int i = 0; i < length; i++)
                 {
                     int v = Il2Wasm.Runtime.Mem.LoadI32(data + 4 * i);

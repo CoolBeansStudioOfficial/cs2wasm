@@ -1549,6 +1549,25 @@ public sealed partial class IlCompiler
             });
         }
 
+        /// <summary>An unchecked float to a 1- or 2-byte integer (conv.i1, conv.u1, conv.i2, conv.u2, char): saturated to
+        /// the target's range, NaN to 0. Saturating to int32 and clamping to the target's bounds gives that; narrowing the
+        /// int32 bits instead would wrap +Infinity to -1 for sbyte.</summary>
+        public WasmFunction ConvSaturateSmall(VK from, byte small, bool unsignedTarget)
+        {
+            var ft = from == VK.F32 ? ValType.F32 : ValType.F64;
+            int bits = small * 8;
+            int lo = unsignedTarget ? 0 : -(1 << (bits - 1)), hi = unsignedTarget ? (1 << bits) - 1 : (1 << (bits - 1)) - 1;
+            return Cached($"rt.conv_sat {from} {(unsignedTarget ? "u" : "i")}{bits}", FT([ft], [I]), e =>
+            {
+                e.Get(0); if (from == VK.F32) e.Op(WOp.F64PromoteF32);
+                e.Op(WOp.I32TruncSatF64S);
+                int v = e.AddLocal(I); e.Set(v);
+                e.Get(v); e.I32(lo); e.Op(WOp.I32LtS); e.If(); e.I32(lo); e.Set(v); e.End();
+                e.Get(v); e.I32(hi); e.Op(WOp.I32GtS); e.If(); e.I32(hi); e.Set(v); e.End();
+                e.Get(v);
+            });
+        }
+
         /// <summary>Overflow-checked conversions: the value against the target's range, then converted.</summary>
         public WasmFunction ConvOvf(VK from, VK to, byte small, bool unsignedTarget, bool fromUn)
         {

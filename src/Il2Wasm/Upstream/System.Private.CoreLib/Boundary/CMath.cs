@@ -790,7 +790,8 @@ namespace System
         public static double Sinh(double x)
         {
             double a = Rt.Abs(x);
-            double h = x < 0 ? -0.5 : 0.5;
+            // (the sign bit, not x < 0: sinh(-0.0) is -0.0)
+            double h = Hi(x) < 0 ? -0.5 : 0.5;
             if (a < 22)
             {
                 double t = Expm1(a);

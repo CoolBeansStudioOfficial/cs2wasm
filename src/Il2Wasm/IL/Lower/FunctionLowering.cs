@@ -1142,6 +1142,7 @@ sealed partial class FunctionLowering
         if (to == VK.Ptr) to = VK.I32;
         Get(src);
         if (n.Ovf) { E.Call(C.Rt.ConvOvf(sk, to, n.Small, n.Unsigned, fromUn)); return; }
+        if (to == VK.I32 && n.Small is 1 or 2 && sk is VK.F32 or VK.F64) { E.Call(C.Rt.ConvSaturateSmall(sk, n.Small, n.Unsigned)); return; }
         switch (to)
         {
             case VK.I32:
