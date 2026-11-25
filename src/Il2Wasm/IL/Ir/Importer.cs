@@ -638,6 +638,15 @@ public sealed partial class Importer
             return n;
         }
 
+        /// <summary>conv.r4. An unsigned integer converted by conv.r.un (to F) and then conv.r4 is one conversion to a single
+        /// (C#'s (float)ulong): through the double it would round twice, which the CLR's JIT does not do.</summary>
+        Node ConvToSingle(Node v)
+        {
+            if (v.Op == Opc.Conv && v.Sub == (byte)VK.F64 && v.I == 1 && v.A.Length == 1 && v.A[0].Kind is VK.I32 or VK.I64)
+                return Conv(v.A[0], VK.F32, 0, false, true, false);
+            return Conv(v, VK.F32, 0, false, false, false);
+        }
+
         void Terminate(Opc op, params Node[] a)
         {
             var n = I.NewNode(op, VK.Void, B, a);
@@ -735,7 +744,7 @@ public sealed partial class Importer
                 case ILOpcode.conv_u8: Push(Conv(Pop(), VK.I64, 8, true, false, false)); return true;
                 case ILOpcode.conv_i: Push(Conv(Pop(), VK.Ptr, 4, false, false, false)); return true;
                 case ILOpcode.conv_u: Push(Conv(Pop(), VK.Ptr, 4, true, false, false)); return true;
-                case ILOpcode.conv_r4: Push(Conv(Pop(), VK.F32, 0, false, false, false)); return true;
+                case ILOpcode.conv_r4: Push(ConvToSingle(Pop())); return true;
                 case ILOpcode.conv_r8: Push(Conv(Pop(), VK.F64, 0, false, false, false)); return true;
                 case ILOpcode.conv_r_un: Push(Conv(Pop(), VK.F64, 0, false, true, false)); return true;
                 case ILOpcode.conv_ovf_i1: Push(Conv(Pop(), VK.I32, 1, false, false, true)); return true;

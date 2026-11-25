@@ -87,6 +87,13 @@ public sealed partial class IlCompiler
         switch (am.Kind)
         {
             case ArrayMethodKind.Address:
+                // (a reference element's address is not given out of an array of another type: string[,] seen as object[,],
+                // ArrayTypeMismatchException, as an address of a covariant element is not a store that can be checked)
+                if (k == VK.Ref)
+                {
+                    e.Get(0); e.Load(WOp.I32Load, 4); e.Tid(TypeId(at)); e.Op(WOp.I32Ne);
+                    e.If(); e.Call(FunctionFor(CoreMethod("System", "ThrowHelper", "ThrowArrayTypeMismatchException"))); e.End();
+                }
                 e.Get(addr);
                 break;
             case ArrayMethodKind.Get:
@@ -115,6 +122,9 @@ public sealed partial class IlCompiler
                 }
                 else if (k == VK.Ref)
                 {
+                    // (a reference into an array of another type, string[,] seen as object[,]: the covariance check first)
+                    e.Get(0); e.Load(WOp.I32Load, 4); e.Tid(TypeId(at)); e.Op(WOp.I32Ne);
+                    e.If(); e.Get(0); e.Get(v); e.Call(FunctionFor(CoreMethod("Il2Wasm.Runtime", "Rt", "StoreCheck"))); e.End();
                     int old = e.AddLocal(ValType.I32);
                     e.Get(addr); e.Load(WOp.I32Load); e.Set(old);
                     e.Get(addr); e.Get(v); e.Call(Rt.Retain); e.Store(WOp.I32Store);
