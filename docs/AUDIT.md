@@ -757,6 +757,38 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     (442,151 checks walking 4.27 million members, 397,736 and 3.87 million with CS2WASM_NO_STALE_NOTE=1, the time
     within its noise): the structure that makes each check large is the library's compilation from sources, which
     only the self-hosted compiler has. Open, not merged.
+  - **The checks the self-hosted compiler pays for, by where they are asked (2026-11-23, claude/determinism-1).**
+    CS2WASM_DROP_STATS=1 now counts each check at the drop by where it was asked from (Runtime.cs DroppedW, DsPrint's
+    `why` rows) and each walk to a top by its caller (TopS); tools/drop-stats-self.sh builds the self-hosted compiler
+    so and runs it (homelab, test 088, all byte for byte). Main's runtime (2440607): 1.97 million checks, 370 million
+    walks to a top of 2.94 billion steps (TopHeld 220 million / 1.34 billion, NoteOutside 149 / 1.60). The branch as
+    merged (fcb3521): 2.43 million checks; the checks at a release (why 0) 1.09 million visiting 408 million members
+    for sets of 10 left at the end, about 375 visits each; walks 1.30 billion of 16.0 billion steps, of which the
+    trial's TakeInAbove about 620 million. So the cost was not the checks the branch adds (the survivor holds' 427,000
+    checks visit 48 million members, the stale notes' 22,000 three million) but what each check did: a walk up from
+    every reference of the set into another structure, and the visit of a living structure taken in until a member
+    code refers to, which then stopped the take-in.
+    Changes, each with its switch: TopToTake (CS2WASM_NO_TAKE_IN_STOP=1) stops the take-in where the walk up meets a
+    member that code refers to, the outcome the visit of that member gave, without the visit, and stops at a member
+    in the trial already (TakeInAbove's walks 620 million to 94 million, 0.85 billion steps; a first form, 099f3c3,
+    left that top out and let the take-in go on, which made the trials visit other living structures whole: 2.9
+    billion visits, 088 in 388 s; replaced the same hour). TakeInCache (CS2WASM_NO_TAKE_IN_CACHE=1) keeps the last
+    walk for the owner it began at within one trial. NoTopSelf (CS2WASM_NO_TOP_SELF=1): TopHeld and NoteOutside take
+    a member without an owner as its own top with no call (195 million of TopHeld's 371 million walks; they were
+    from destructions' survivors whose checks left notes, CS2WASM_NO_SURVIVOR_HOLD=1 takes TopHeld to 234 million).
+    Tests: 215 (CS2WASM_TAKE_IN_STOP_BREAK=1, no top taken in from above: `two structures: 7` for 1), 280.
+  - **A trial whose take-in held a living structure (test 282, 283; claude/determinism-1).** Test 215's two
+    structures, each root also referring into a structure that lives (a static's member refers into it, so its own
+    check failed with a note): the trial took in the other structure and the living one, failed by the static's
+    reference, and the trial of what the top owns alone failed by the other structure's; both stayed (main 14 and 17
+    where .NET has 5; claude/load-flakes-1 8 and 11). LivingTops: when the trial with tops taken in fails and what
+    the top owns has no reference left from outside, the tops above the members that have (a walk up from each such
+    member, not a visit of what a top owns) are left out and the trial is made again with the other tops; again
+    until none such is left, each round one top more, so at most as many rounds as tops taken in, with lists as long
+    as needed. The tops taken in learn their shares from the first trial, as before. With members code refers to in
+    what the top owns the same: the note is then of the held kind on the right set. Test 283: a chain of five living
+    structures (five rounds) and one with forty members a static's list refers to: the counts .NET gives (main
+    there 24 to 79 against 21 and 62). CS2WASM_NO_TAKE_IN_DROP=1: as before.
   - **What the tests asked that .NET does not promise**, each checked against .NET under the same load (400 runs
     of the test as it was, eight processes): .NET gave the usual output in all 400 for 127, 131, 135, 187, so none
     of these is shown by .NET's output; they stand on .NET's sources. 127 and 187 counted what was left right
