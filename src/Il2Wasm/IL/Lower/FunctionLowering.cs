@@ -923,7 +923,7 @@ sealed partial class FunctionLowering
                 // a Nullable<T> boxes as its value (a T's box), or as null when it has none (ECMA-335 III.4.1)
                 var t = (TypeDesc)n.X!;
                 var vt = t.Instantiation[0];
-                C.Constructed(vt);
+                C.Boxed(vt);
                 var (hv, vf) = NullableFields(t);
                 int es = IlCompiler.SizeOfAny(vt);
                 Get(n.A[0]); E.Load(WOp.I32Load8U, hv);
@@ -959,7 +959,7 @@ sealed partial class FunctionLowering
             case Opc.Box:
             {
                 var t = (TypeDesc)n.X!;
-                C.Constructed(t);
+                C.Boxed(t);
                 if (_frameObj.ContainsKey(n)) AllocFrame(n);
                 else { E.I32(IlContext.ObjectHeader + Math.Max(4, Kinds.SizeOf(t))); E.Tid(C.TypeId(t)); E.Call(C.Rt.AllocObject); Set(n); }
                 if (n.A[0].Kind == VK.Struct)

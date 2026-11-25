@@ -573,47 +573,6 @@ public sealed partial class IlCompiler
         }
     }
 
-    readonly Dictionary<string, Blob> _refOffsetLists = new();
-    bool _refTableWanted;
-    Blob? _refTable;
-
-    /// <summary>A value type's reference slots, flattened through its fields (and its inline arrays): [count, offsets...]
-    /// in ascending order, the offsets from the start of the value. Null for a value with no reference slot, and for an
-    /// open type, which has no layout.</summary>
-    Blob? RefOffsetsBlob(TypeDesc t)
-    {
-        if (t is not MetadataType { IsValueType: true, ContainsGCPointers: true } mt || t.ContainsSignatureVariables(treatGenericParameterLikeSignatureVariable: true)) return null;
-        var map = GCPointerMap.FromInstanceLayout(mt);
-        var offsets = new List<int>();
-        for (int i = 0; i < map.Size; i++) if (map[i]) offsets.Add(i * t.Context.Target.PointerSize);
-        if (offsets.Count == 0) return null;
-        var key = string.Join(",", offsets);
-        if (!_refOffsetLists.TryGetValue(key, out var b))
-            _refOffsetLists[key] = b = DataBlob([.. BitConverter.GetBytes(offsets.Count), .. offsets.SelectMany(BitConverter.GetBytes)], 4);
-        return b;
-    }
-
-    /// <summary>TypeInfo.RefTable, made when the program's code asks for it (Equals and GetHashCode of a value type with
-    /// reference slots reach it): [count, (final type id, offsets blob)...] ascending by id, for the value types that have
-    /// reference slots. The runtime searches it by id.</summary>
-    void EmitRefTable(TypeDesc?[] byFinal)
-    {
-        if (!_refTableWanted) return;
-        var words = new List<int>();
-        var relocs = new List<(int, IAddress)>();
-        var entries = new List<(int id, Blob list)>();
-        for (int i = 0; i < byFinal.Length; i++)
-            if (byFinal[i] is { } t && RefOffsetsBlob(t) is { } list) entries.Add((i, list));
-        words.Add(entries.Count);
-        foreach (var (id, list) in entries)
-        {
-            words.Add(id);
-            relocs.Add((words.Count * 4, list));
-            words.Add(0);
-        }
-        _refTable = DataBlob([.. words.SelectMany(BitConverter.GetBytes)], 4, relocs);
-    }
-
     readonly Dictionary<TypeDesc, Blob> _enumInfo = new();
 
     /// <summary>An enum's table: [count][flags][size][unsigned] then 16-byte entries (value as i64, name).</summary>

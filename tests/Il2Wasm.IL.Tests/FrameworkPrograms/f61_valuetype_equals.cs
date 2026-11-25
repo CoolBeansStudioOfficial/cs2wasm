@@ -1,6 +1,7 @@
-// ValueType.Equals and ValueType.GetHashCode for a struct with reference fields (no override): as .NET, each reference
-// field compares by object.Equals (so distinct but equal strings are equal), the other bytes compare raw, and the hash
-// comes from the first field that is not a null reference. Before the fix, the references compared by identity, so
+// ValueType.Equals and ValueType.GetHashCode for a struct with no override of its own: as .NET (CanCompareBits), a value
+// with reference, float or overriding fields compares field by field: each reference field by object.Equals (so distinct
+// but equal strings are equal), a float by double.Equals (0.0 and -0.0 alike, NaN alike), a field whose type overrides
+// Equals by that override, a Nullable by its value; the hash comes from the first field that decides. Before the fix, the references compared by identity, so
 // equal values with distinct strings were unequal and a Dictionary keyed by such a struct did not find its entries.
 // Nested structs flatten: an outer struct's equality reaches the inner struct's string.
 using System;
@@ -11,6 +12,17 @@ struct Inner { public string Text; public int Count; }
 struct Outer { public Inner In; public int Tag; }
 struct Nulls { public string S; public object O; }
 struct Plain { public int X; public int Y; }
+struct Floats { public double D; public float F; }
+// overrides Equals and GetHashCode: a field of this type compares by them, not by its bytes
+struct Tagged
+{
+    public int Id;
+    public override bool Equals(object obj) => obj is Tagged t && t.Id % 10 == Id % 10;
+    public override int GetHashCode() => Id % 10;
+}
+struct Holder { public Tagged T; public int K; }
+struct Nullables { public int? V; public int K; }
+struct Bits { public long A; public byte B; public short C; }
 
 static class Program
 {
@@ -56,5 +68,31 @@ static class Program
 
         var p1 = new Plain { X = 1, Y = 2 };
         Console.WriteLine("plain struct: " + p1.Equals(new Plain { X = 1, Y = 2 }) + " " + p1.Equals(new Plain { X = 1, Y = 3 }) + " " + (p1.GetHashCode() == new Plain { X = 1, Y = 2 }.GetHashCode()));
+
+        // floats compare as double.Equals and hash alike: 0.0 is -0.0, and a NaN is any NaN
+        var f1 = new Floats { D = 0.0, F = 1f };
+        var f2 = new Floats { D = -0.0, F = 1f };
+        var nan1 = new Floats { D = BitConverter.Int64BitsToDouble(0x7FF8000000000001), F = 2f };
+        var nan2 = new Floats { D = double.NaN, F = 2f };
+        Console.WriteLine("zero signs: " + f1.Equals(f2) + ", hash equal: " + (f1.GetHashCode() == f2.GetHashCode()));
+        Console.WriteLine("NaN payloads: " + nan1.Equals(nan2) + ", hash equal: " + (nan1.GetHashCode() == nan2.GetHashCode()));
+        Console.WriteLine("float differs: " + f1.Equals(new Floats { D = 0.0, F = 1.5f }));
+
+        // a struct field with its own Equals: compared by it (ids 3 and 13 are equal to it, 4 is not)
+        var h1 = new Holder { T = new Tagged { Id = 3 }, K = 5 };
+        var h2 = new Holder { T = new Tagged { Id = 13 }, K = 5 };
+        var h3 = new Holder { T = new Tagged { Id = 4 }, K = 5 };
+        Console.WriteLine("override field: " + h1.Equals(h2) + " " + h1.Equals(h3) + ", hash equal: " + (h1.GetHashCode() == h2.GetHashCode()));
+
+        // a Nullable field: null equals null whatever its bytes, a value by its value
+        var nl1 = new Nullables { V = null, K = 1 };
+        var nl2 = new Nullables { V = null, K = 1 };
+        var nl3 = new Nullables { V = 7, K = 1 };
+        var nl4 = new Nullables { V = 7, K = 1 };
+        Console.WriteLine("nullable: " + nl1.Equals(nl2) + " " + nl1.Equals(nl3) + " " + nl3.Equals(nl4) + " " + nl3.Equals(new Nullables { V = 8, K = 1 }));
+
+        // the fields compare one by one (the bytes of its padding are not read): a long, a byte and a short
+        var bi1 = new Bits { A = 9, B = 2, C = 3 };
+        Console.WriteLine("bits: " + bi1.Equals(new Bits { A = 9, B = 2, C = 3 }) + " " + bi1.Equals(new Bits { A = 9, B = 2, C = 4 }));
     }
 }
