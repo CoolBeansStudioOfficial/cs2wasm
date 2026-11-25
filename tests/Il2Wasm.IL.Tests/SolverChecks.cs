@@ -110,6 +110,20 @@ static class SolverChecks
         }
         """;
 
+    // (B is stored into an A[] only through MemoryMarshal.GetArrayDataReference)
+    const string ArrayDataRef = """
+        using System;
+        using System.Runtime.CompilerServices;
+        using System.Runtime.InteropServices;
+        class A { public virtual int M() => 1; }
+        sealed class B : A { public override int M() => 2; }
+        static class P
+        {
+            [MethodImpl(MethodImplOptions.NoInlining)] static void Put(A[] arr) => MemoryMarshal.GetArrayDataReference(arr) = new B();
+            static void Main() { var arr = new A[] { new A() }; Put(arr); Console.WriteLine(arr[0].M()); }
+        }
+        """;
+
     // (Holder.F, an object field, only ever holds a string; Fin's finalizer runs a delegate, Wild)
     const string DestroyFields = """
         using System;
@@ -239,6 +253,17 @@ static class SolverChecks
                 kind = ld == null ? "no load" : facts.Own[ld].Kind.ToString();
             }
             c.Eq("borrows: a load held across a call on a receiver that can only be null", kind, "Guaranteed");
+        }
+        {
+            // a write through MemoryMarshal.GetArrayDataReference<T>(arr) is a write to the array's elements, Elem(T)
+            // (TypeSets.ElementAddress; its IL's address is Array.RawData's byte field, which no element read sees.
+            // IL2WASM_NO_ELEMENT_ADDRESSES=1: the field)
+            var sol = SecondSolve(dir, "typesets_array_data", ArrayDataRef);
+            MetadataTypeOf(sol, "A", out var at);
+            var elem = at == null ? null : sol.KeyTypes(MemKey.Elem(at))?.Select(t => t.ToString()!).ToList();
+            bool noAddr = Environment.GetEnvironmentVariable("IL2WASM_NO_ELEMENT_ADDRESSES") == "1";
+            c.True("type sets: a write through GetArrayDataReference reaches the elements: Elem(A) " + (elem == null ? "unknown" : "{" + string.Join(", ", elem) + "}"),
+                sol.TypeSetsSolved && elem != null && elem.Any(t => t.EndsWith("B")) != noAddr);
         }
         {
             // a destroy releases what a load of each field would give: Holder.F, declared object, holds only strings, so
