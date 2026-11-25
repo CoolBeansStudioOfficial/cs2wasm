@@ -121,15 +121,24 @@ static class EndToEnd
 
     /// <summary>The programs of FrameworkPrograms/*.cs (the IL features the NetWasm suite's failures came down to, each
     /// its smallest repro), compiled against the real CoreLib and run under host/run.mjs; .NET is the oracle.</summary>
-    public static void RunFramework(Checks c)
+    public static void RunFramework(Checks c) =>
+        RunPrograms(c, "FrameworkPrograms", "end to end on the IL CoreLib: FrameworkPrograms against .NET", all: false);
+
+    /// <summary>The old suite's cycle tests (CyclePrograms/*.cs, docs/MEMORY-IR.md S2), run like FrameworkPrograms. Only
+    /// with the filter "cycles", so the default run is unchanged. They are expected to fail until cycles are freed:
+    /// "// live: n" counts the objects left at exit, and the output must equal .NET's.</summary>
+    public static void RunCycles(Checks c) =>
+        RunPrograms(c, "CyclePrograms", "cycle groups: CyclePrograms (the old suite's cycle tests) against .NET", all: true);
+
+    static void RunPrograms(Checks c, string dirName, string section, bool all)
     {
-        c.Section("end to end on the IL CoreLib: FrameworkPrograms against .NET");
+        c.Section(section);
         var fw = FrameworkDir();
         if (fw == null) { c.Info("no framework (node tools/build-corelib.mjs, or IL2WASM_FRAMEWORK): skipped"); return; }
-        foreach (var file in Directory.GetFiles(Build.Here("FrameworkPrograms"), "*.cs").OrderBy(f => f, StringComparer.Ordinal))
+        foreach (var file in Directory.GetFiles(Build.Here(dirName), "*.cs").OrderBy(f => f, StringComparer.Ordinal))
         {
             var name = Path.GetFileNameWithoutExtension(file);
-            if (!c.WantsProgram(name)) continue;
+            if (!all && !c.WantsProgram(name)) continue;
             var src = File.ReadAllText(file);
             // ("// plan: only": a program whose output depends on the memory model's plan, IL2WASM_MEM_PLAN=1; the naive
             // plan is the baseline that leaks there. "// live: n": with the plan, the objects live at exit, counted)

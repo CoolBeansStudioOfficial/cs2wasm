@@ -41,6 +41,7 @@ try
     if (c.Wants("sigs")) SignatureChecks.Run(c);
     if (c.Wants("e2e")) EndToEnd.Run(c);
     if (c.Wants("fw")) EndToEnd.RunFramework(c);
+    if (filter == "cycles") EndToEnd.RunCycles(c);   // (only by name: the cycle tests fail until cycles are freed)
     if (RuntimePrograms.Wants(filter)) RuntimePrograms.Run(c, filter);
 }
 finally { try { Directory.Delete(Build.Dir, true); } catch { } }
