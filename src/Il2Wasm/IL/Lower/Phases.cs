@@ -21,6 +21,9 @@ public sealed partial class IlCompiler : IReachHost
     ImportedMethod ImportMethod(MethodDesc m)
     {
         var u = new ImportedMethod(m);
+        // (IL2WASM_SIZE_CUT=text|text..., a measurement aid only, it changes behaviour: each method whose name contains
+        // one of the texts has no body (it traps), so what only it reached is not emitted; docs/SIZE-HELLO.md)
+        if (s_sizeCut != null && m.ToString() is { } mn && s_sizeCut.Any(c => mn.Contains(c, System.StringComparison.Ordinal))) return u;
         try
         {
             var typical = m.GetTypicalMethodDefinition() as EcmaMethod;
@@ -41,7 +44,8 @@ public sealed partial class IlCompiler : IReachHost
 
     /// <summary>IL2WASM_MEM_REIMPORT=1: the reach phase keeps only each method's summary and its import decisions, and
     /// lowering imports the body again (less memory held between the phases, one more import per method).</summary>
-    static readonly bool s_reimport = System.Environment.GetEnvironmentVariable("IL2WASM_MEM_REIMPORT") == "1";
+    static readonly string[]? s_sizeCut = System.Environment.GetEnvironmentVariable("IL2WASM_SIZE_CUT") is { Length: > 0 } cut ? cut.Split('|') : null;
+    static readonly bool s_reimport =System.Environment.GetEnvironmentVariable("IL2WASM_MEM_REIMPORT") == "1";
 
     ImportedMethod? IReachHost.Import(MethodDesc m)
     {

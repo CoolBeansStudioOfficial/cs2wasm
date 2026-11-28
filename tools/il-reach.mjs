@@ -2,6 +2,8 @@
 //
 // usage: node tools/il-reach.mjs <reach file> <sizes file> [--top n] [--chain text] [--ns] [--types text]
 //   (IL2WASM_IL_REACH=<reach file> IL2WASM_SIZES_FILE=<sizes file> when compiling)
+//   [--tree minBytes] (the first-reach tree from the roots, every subtree of at least minBytes, largest first)
+//   [--literals] (the literals and other data blobs by what asked for them: method code, or the compiler's generator)
 //
 // Prints the code's total, the namespaces by size, and the methods whose first-reach subtree is largest (each
 // method's own size plus that of everything it first reached: what cutting it alone would remove, as an upper bound).
@@ -19,15 +21,19 @@ for (const l of fs.readFileSync(sizesFile, 'utf8').split(/\r?\n/)) {
   const t = l.indexOf('\t');
   sizes.set(l.slice(t + 1), (sizes.get(l.slice(t + 1)) ?? 0) + +l.slice(0, t));
 }
-const parent = new Map(), via = new Map(), types = [], data = [];
+const parent = new Map(), via = new Map(), types = [], data = [], literals = [], blobs = [];
 for (const l of fs.readFileSync(reachFile, 'utf8').split(/\r?\n/)) {
   if (!l) continue;
   const p = l.split('\t');
   if (p[0] === 'M') {
     if (p[2] === 'D') { parent.set(p[1], p[3]); via.set(p[1], p[4]); }
+    // (G: reached by the compiler's generated code, no method's: the generator's own methods stand as its parent)
+    else if (p[2] === 'G') { parent.set(p[1], p[4]); if (!parent.has(p[4])) parent.set(p[4], ''); }
     else parent.set(p[1], p[3]);
   } else if (p[0] === 'T') types.push([p[1], p[2]]);
   else if (p[0] === 'D') data.push([+p[1], p[2]]);
+  else if (p[0] === 'L') literals.push([+p[1], p[2], p[3]]);
+  else if (p[0] === 'B') blobs.push([+p[1], p[2]]);
 }
 const size = n => sizes.get(n) ?? 0;
 let total = 0;
@@ -87,4 +93,22 @@ const typesText = opt('--types');
 if (typesText !== undefined) {
   console.log('\nconstructed types:');
   for (const [t, by] of types) if (t.includes(typesText)) console.log(`  ${t}  <- ${by}`);
+}
+
+const treeMin = opt('--tree');
+if (treeMin !== undefined) {
+  console.log(`\nfirst-reach tree (subtrees of ${treeMin} bytes or more; inclusive (own)):`);
+  const walk = (n, d) => {
+    if ((incl.get(n) ?? 0) < +treeMin) return;
+    console.log(`${'  '.repeat(d + 1)}${incl.get(n)} (${size(n)}) ${n.length > 150 ? n.slice(0, 150) : n}${via.has(n) ? '  [on ' + via.get(n) + ']' : ''}`);
+    for (const c of (children.get(n) ?? []).slice().sort((a, b) => incl.get(b) - incl.get(a))) walk(c, d + 1);
+  };
+  for (const r of (children.get('') ?? []).slice().sort((a, b) => incl.get(b) - incl.get(a))) walk(r, 0);
+}
+if (args.includes('--literals')) {
+  const by = new Map();
+  for (const [n, who] of literals) { const k = who.startsWith('gen ') ? who : 'method code'; const e = by.get(k) ?? [0, 0]; e[0] += n; e[1]++; by.set(k, e); }
+  for (const [n, who] of blobs) { const k = 'blob ' + who; const e = by.get(k) ?? [0, 0]; e[0] += n; e[1]++; by.set(k, e); }
+  console.log('\nliterals and blobs by what asked for them (bytes, count):');
+  for (const [k, [n, c]] of [...by].sort((a, b) => b[1][0] - a[1][0])) console.log(`  ${String(n).padStart(8)} ${String(c).padStart(5)}  ${k}`);
 }

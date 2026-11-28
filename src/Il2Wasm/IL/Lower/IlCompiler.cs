@@ -458,6 +458,7 @@ public sealed partial class IlCompiler
         _queue.Enqueue((m, f));
         _why[m] = _compiling;
         if (_dispatchWhy.slot != null) _whyDispatch[m] = _dispatchWhy;
+        else if (_compiling == null && s_reachFile) _whyGen[m] = GeneratedBy();
         return f;
     }
 
@@ -502,11 +503,23 @@ public sealed partial class IlCompiler
     void WriteReach(string path)
     {
         var lines = new List<string>();
-        string N(MethodDesc? c) => c != null && _functions.TryGetValue(c, out var cf) ? cf.Name : "";
+        // (a method compiled only as a specialization variant has no entry function: its first variant names it)
+        var variantName = new Dictionary<MethodDesc, string>();
+        foreach (var ((vm, _), vf) in _variantFns) variantName.TryAdd(vm, vf.Name);
+        string N(MethodDesc? c) => c == null ? "" : _functions.TryGetValue(c, out var cf) ? cf.Name : variantName.GetValueOrDefault(c, "nofn " + c);
         foreach (var (m, f) in _functions)
         {
             if (_whyDispatch.TryGetValue(m, out var d)) lines.Add($"M\t{f.Name}\tD\tdispatch {d.slot}\t{d.type}");
+            else if (_whyGen.TryGetValue(m, out var g)) lines.Add($"M\t{f.Name}\tG\t\t{g}");
             else lines.Add($"M\t{f.Name}\tC\t{N(_why.GetValueOrDefault(m))}");
+        }
+        // (each variant is reached as its method is; a variant other than the first is reached by the first)
+        foreach (var ((vm, _), vf) in _variantFns)
+        {
+            string first = variantName[vm];
+            if (_functions.TryGetValue(vm, out var entry)) lines.Add($"M\t{vf.Name}\tC\t{entry.Name}");
+            else if (vf.Name != first) lines.Add($"M\t{vf.Name}\tC\t{first}");
+            else lines.Add($"M\t{vf.Name}\tC\t{N(_why.GetValueOrDefault(vm))}");
         }
         foreach (var (slot, f) in _stubs) lines.Add($"M\t{f.Name}\tC\t{N(_whyStub.GetValueOrDefault(slot))}");
         foreach (var (t, c) in _whyConstructed) lines.Add($"T\t{t}\t{N(c)}");
@@ -514,11 +527,34 @@ public sealed partial class IlCompiler
         foreach (var (fd, b) in _rva) lines.Add($"D\t{b.Bytes.Length}\tfield {fd}");
         lines.Add($"D\t{_literalOrder.Sum(s => 18 + 2 * s.Length)}\t{_literalOrder.Count} literals");
         lines.Add($"D\t{_blobs.Where(b => !_rva.ContainsValue(b)).Sum(b => b.Bytes.Length)}\tother blobs");
+        // each literal (its bytes, who asked for it first, its text's start) and each other blob (who made it)
+        for (int i = 0; i < _literalOrder.Count; i++)
+            lines.Add($"L\t{18 + 2 * _literalOrder[i].Length}\t{_literalWhy.GetValueOrDefault(i)}\t{Clip(_literalOrder[i])}");
+        foreach (var b in _blobs.Where(b => !_rva.ContainsValue(b))) lines.Add($"B\t{b.Bytes.Length}\t{b.Why}");
         System.IO.File.WriteAllLines(path, lines);
+        static string Clip(string s) => (s.Length > 80 ? s[..80] : s).Replace('\t', ' ').Replace('\n', ' ').Replace('\r', ' ');
     }
 
     readonly Dictionary<MethodDesc, MethodDesc?> _why = new();
     MethodDesc? _compiling;
+    internal static readonly bool s_reachFile = Environment.GetEnvironmentVariable("IL2WASM_IL_REACH") is { Length: > 0 };
+    readonly Dictionary<MethodDesc, string> _whyGen = new();
+    readonly Dictionary<int, string> _literalWhy = new();
+
+    /// <summary>For IL2WASM_IL_REACH: the compiler's own methods that asked for a function or data no method's code
+    /// reached (the generated code: runtime tables, static initializers, destroy functions), innermost first.</summary>
+    internal static string GeneratedBy()
+    {
+        var names = new List<string>();
+        foreach (var fr in new System.Diagnostics.StackTrace(2, false).GetFrames())
+        {
+            var mb = fr.GetMethod();
+            if (mb == null || mb.Name is "FunctionFor" or "VariantFor" or "StringLiteral" or "DataBlob") continue;
+            names.Add(mb.DeclaringType?.Name + "." + mb.Name);
+            if (names.Count == 4) break;
+        }
+        return "gen " + string.Join(" < ", names);
+    }
 
     /// <summary>For an error's message: the chain of methods whose code first reached this one.</summary>
     string WhyReached(MethodDesc m)
@@ -830,6 +866,7 @@ public sealed partial class IlCompiler
         if (_literals.TryGetValue(s, out var l)) return l.addr;
         int i = _literalOrder.Count;
         _literalOrder.Add(s);
+        if (s_reachFile) _literalWhy[i] = _compiling?.ToString() ?? GeneratedBy();
         var a = new LateAddr(() => _literalOffsets[i]);
         _literals[s] = (a, i);
         return a;

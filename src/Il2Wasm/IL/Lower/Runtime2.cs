@@ -20,6 +20,8 @@ sealed class Blob : IAddress
     public int Align = 4;
     public List<(int Off, IAddress Addr)> Relocs = [];
     public int Offset;
+    /// <summary>IL2WASM_IL_REACH: the compiler's methods that made it.</summary>
+    public string? Why;
     public int Address => Offset;
     public bool Immortal => true;
 }
@@ -33,7 +35,7 @@ public sealed partial class IlCompiler
 
     internal Blob DataBlob(byte[] bytes, int align, List<(int, IAddress)>? relocs = null)
     {
-        var b = new Blob { Bytes = bytes, Align = align, Relocs = relocs ?? [] };
+        var b = new Blob { Bytes = bytes, Align = align, Relocs = relocs ?? [], Why = s_reachFile ? GeneratedBy() : null };
         _blobs.Add(b);
         return b;
     }
